@@ -1,0 +1,34 @@
+diff --git a/src/flask/third_party/cython/connectivity.py b/src/flask/third_party/cython/connectivity.py
+new file mode 100644
+--- /dev/null
++++ b/src/flask/third_party/cython/connectivity.py
+@@
++"""Compatibility shim for the repository's CPython 3.6-only extension."""
++import numpy as np
++from skimage.segmentation._slic import _enforce_label_connectivity_cython
++
++def enforce_connectivity(segments, min_size, max_size):
++    return _enforce_label_connectivity_cython(
++        np.asarray(segments, dtype=np.intp), int(min_size), int(max_size), start_label=0
++    )
+diff --git a/src/flask/sal_model/BASNet.py b/src/flask/sal_model/BASNet.py
+--- a/src/flask/sal_model/BASNet.py
++++ b/src/flask/sal_model/BASNet.py
+@@
+-        resnet = models.resnet34(pretrained=True)
++        resnet = models.resnet34(weights=None)
+diff --git a/src/flask/saliency/basnet_test.py b/src/flask/saliency/basnet_test.py
+--- a/src/flask/saliency/basnet_test.py
++++ b/src/flask/saliency/basnet_test.py
+@@
+-    net.load_state_dict(torch.load(model_dir))
++    net.load_state_dict(torch.load(model_dir, weights_only=False))
+@@
+-    net.load_state_dict(torch.load(model_dir, map_location='cpu'))
++    net.load_state_dict(torch.load(model_dir, map_location='cpu', weights_only=False))
+diff --git a/src/flask/spixel/run_demo.py b/src/flask/spixel/run_demo.py
+--- a/src/flask/spixel/run_demo.py
++++ b/src/flask/spixel/run_demo.py
+@@
+-    network_data = torch.load(model_dir, map_location='cpu')
++    network_data = torch.load(model_dir, map_location='cpu', weights_only=False)

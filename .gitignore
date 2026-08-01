@@ -1,0 +1,40 @@
+# JavaScript dependencies and generated frontend output
+node_modules/
+dist/
+site/
+
+# Licensed/private datasets and generated benchmark artifacts
+data/*
+!data/synthetic/
+!data/synthetic/**
+
+# Environment-specific data acquisition helpers
+scripts/download_s3_benchmark.py
+scripts/download_s3_samples.sh
+
+# Generated visual QA references
+design/*.png
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.log
+

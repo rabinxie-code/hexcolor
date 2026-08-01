@@ -1,0 +1,1640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="面向 5B 图片与 100B 区域的 Hexcode 提取技术方案、开源工具选型与吞吐量计算器。" />
+  <title>5B 图片 / 100B 区域的 Hexcode 提取方案</title>
+  <style>
+    :root {
+      --bg: #08101f;
+      --bg-soft: #0d1730;
+      --panel: rgba(18, 31, 58, 0.82);
+      --panel-strong: #111d36;
+      --panel-light: #162443;
+      --text: #f6f8ff;
+      --muted: #a9b6d3;
+      --muted-2: #7f90b4;
+      --line: rgba(164, 184, 224, 0.17);
+      --cyan: #5ee8ff;
+      --blue: #6ea8ff;
+      --violet: #a88cff;
+      --green: #5ce1a5;
+      --yellow: #ffd166;
+      --orange: #ff9b73;
+      --red: #ff748c;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+      --radius: 22px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; overflow-x: hidden; }
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at 8% -4%, rgba(94, 232, 255, 0.14), transparent 26%),
+        radial-gradient(circle at 95% 4%, rgba(168, 140, 255, 0.16), transparent 28%),
+        linear-gradient(180deg, #07101f 0%, #091326 45%, #07101d 100%);
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button, input { font: inherit; }
+    ::selection { background: rgba(94, 232, 255, 0.28); }
+
+    .scroll-progress {
+      position: fixed;
+      inset: 0 auto auto 0;
+      height: 3px;
+      width: 0;
+      z-index: 1000;
+      background: linear-gradient(90deg, var(--cyan), var(--violet));
+      box-shadow: 0 0 18px rgba(94, 232, 255, 0.7);
+    }
+
+    .nav-wrap {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(18px);
+      background: rgba(7, 15, 30, 0.82);
+      border-bottom: 1px solid var(--line);
+    }
+
+    nav {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 33px;
+      height: 33px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: linear-gradient(145deg, rgba(94, 232, 255, 0.18), rgba(168, 140, 255, 0.24));
+      border: 1px solid rgba(94, 232, 255, 0.34);
+      box-shadow: inset 0 0 20px rgba(94, 232, 255, 0.08);
+      font-family: var(--mono);
+      color: var(--cyan);
+      font-size: 13px;
+    }
+
+    .nav-links {
+      display: flex;
+      min-width: 0;
+      gap: 18px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .nav-links::-webkit-scrollbar { display: none; }
+    .nav-links a { color: var(--muted); white-space: nowrap; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    main { max-width: 1240px; margin: 0 auto; padding: 0 24px 100px; }
+
+    .hero {
+      position: relative;
+      padding: 86px 0 58px;
+      display: grid;
+      grid-template-columns: 1.3fr 0.7fr;
+      gap: 34px;
+      align-items: end;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 760;
+      letter-spacing: 0.08em;
+      color: var(--cyan);
+      border: 1px solid rgba(94, 232, 255, 0.25);
+      background: rgba(94, 232, 255, 0.07);
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 12px var(--green);
+    }
+
+    h1 {
+      margin: 20px 0 18px;
+      font-size: clamp(42px, 6.2vw, 82px);
+      line-height: 1.02;
+      letter-spacing: -0.055em;
+      max-width: 900px;
+    }
+
+    .gradient-text {
+      color: transparent;
+      background: linear-gradient(92deg, var(--cyan), var(--blue) 48%, var(--violet));
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+
+    .hero-copy {
+      max-width: 810px;
+      color: var(--muted);
+      font-size: 18px;
+      margin: 0;
+    }
+
+    .hero-copy strong { color: var(--text); }
+
+    .hero-side {
+      border: 1px solid rgba(110, 168, 255, 0.24);
+      background:
+        linear-gradient(180deg, rgba(22, 36, 67, 0.94), rgba(12, 23, 45, 0.94));
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+      padding: 24px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero-side::after {
+      content: "";
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      border-radius: 50%;
+      right: -65px;
+      bottom: -88px;
+      background: radial-gradient(circle, rgba(94, 232, 255, 0.2), transparent 68%);
+    }
+
+    .verdict-kicker {
+      color: var(--yellow);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      font-weight: 800;
+    }
+
+    .hero-side h2 {
+      margin: 8px 0 12px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: -0.025em;
+    }
+
+    .hero-side p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .stats {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 20px;
+    }
+
+    .stat-card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(16, 29, 55, 0.55);
+    }
+
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: 830;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .stat-card .label { color: var(--muted-2); font-size: 12px; margin-top: 9px; }
+
+    section { padding-top: 76px; scroll-margin-top: 62px; }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 28px;
+      margin-bottom: 24px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 46px);
+      line-height: 1.1;
+      letter-spacing: -0.045em;
+    }
+
+    .section-head p {
+      max-width: 610px;
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 17px; }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(20, 34, 63, 0.76), rgba(13, 24, 46, 0.78));
+      box-shadow: 0 12px 45px rgba(0, 0, 0, 0.16);
+      padding: 22px;
+    }
+
+    .card h3 { margin: 10px 0 7px; font-size: 18px; letter-spacing: -0.02em; }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .card-icon {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--cyan);
+      background: rgba(94, 232, 255, 0.08);
+      border: 1px solid rgba(94, 232, 255, 0.2);
+    }
+
+    .callout {
+      margin-top: 18px;
+      padding: 20px 22px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 209, 102, 0.25);
+      background: linear-gradient(90deg, rgba(255, 209, 102, 0.09), rgba(255, 155, 115, 0.05));
+      color: #e8debd;
+    }
+    .callout strong { color: var(--yellow); }
+
+    .pipeline {
+      padding: 22px;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: rgba(10, 20, 40, 0.7);
+      overflow-x: auto;
+    }
+
+    .pipeline-row {
+      min-width: 1030px;
+      display: grid;
+      grid-template-columns: repeat(7, minmax(120px, 1fr));
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .pipe-node {
+      position: relative;
+      padding: 16px 14px;
+      border-radius: 15px;
+      background: linear-gradient(180deg, rgba(29, 48, 88, 0.88), rgba(17, 30, 57, 0.9));
+      border: 1px solid rgba(110, 168, 255, 0.23);
+      min-height: 112px;
+    }
+
+    .pipe-node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -18px;
+      top: 38%;
+      color: var(--muted-2);
+      font-weight: 800;
+    }
+
+    .pipe-index {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .pipe-node h4 { margin: 7px 0 5px; font-size: 14px; }
+    .pipe-node p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+    .branch-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 11px;
+      margin-top: 14px;
+      min-width: 920px;
+    }
+
+    .branch {
+      border-radius: 14px;
+      padding: 13px;
+      border: 1px solid var(--line);
+      background: rgba(17, 30, 57, 0.65);
+    }
+    .branch b { display: block; font-size: 12px; margin-bottom: 4px; }
+    .branch span { color: var(--muted); font-size: 11px; }
+    .branch.fast { border-color: rgba(92, 225, 165, 0.3); }
+    .branch.exact { border-color: rgba(94, 232, 255, 0.3); }
+    .branch.medium { border-color: rgba(110, 168, 255, 0.3); }
+    .branch.slow { border-color: rgba(168, 140, 255, 0.3); }
+    .branch.gradient { border-color: rgba(255, 155, 115, 0.3); }
+
+    .stack-line {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      background: rgba(16, 29, 55, 0.64);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .pill b { color: var(--text); }
+
+    .step-list { counter-reset: step; display: grid; gap: 12px; }
+    .step {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      background: rgba(15, 28, 52, 0.7);
+    }
+    .step::before {
+      content: counter(step, decimal-leading-zero);
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: rgba(94, 232, 255, 0.08);
+      border: 1px solid rgba(94, 232, 255, 0.22);
+      font-family: var(--mono);
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .step h3 { margin: 1px 0 4px; font-size: 16px; }
+    .step p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .code-card {
+      position: relative;
+      border: 1px solid rgba(94, 232, 255, 0.17);
+      border-radius: 20px;
+      background: #07101d;
+      overflow: hidden;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+    .code-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 11px 14px;
+      background: #0d1930;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .window-dots { display: flex; gap: 6px; }
+    .window-dots i { width: 8px; height: 8px; border-radius: 50%; display: block; }
+    .window-dots i:nth-child(1) { background: var(--red); }
+    .window-dots i:nth-child(2) { background: var(--yellow); }
+    .window-dots i:nth-child(3) { background: var(--green); }
+    .copy-btn {
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 8px;
+      padding: 5px 9px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .copy-btn:hover { color: var(--text); border-color: rgba(94, 232, 255, 0.28); }
+    pre {
+      margin: 0;
+      padding: 20px;
+      overflow-x: auto;
+      font: 12px/1.65 var(--mono);
+      color: #c8d6f4;
+      tab-size: 2;
+    }
+    .kw { color: #b79aff; }
+    .fn { color: #65e5ff; }
+    .cm { color: #687b9e; }
+    .st { color: #79e2aa; }
+    .nu { color: #ffd179; }
+
+    .table-wrap {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(12, 23, 43, 0.76);
+    }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    th, td { padding: 14px 15px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th {
+      position: sticky;
+      top: 0;
+      background: #12203b;
+      color: #dce6fb;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      z-index: 1;
+    }
+    td { color: var(--muted); font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    td strong { color: var(--text); }
+    .tag {
+      display: inline-flex;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+      border: 1px solid var(--line);
+    }
+    .tag.prod { color: var(--green); background: rgba(92, 225, 165, 0.08); border-color: rgba(92, 225, 165, 0.25); }
+    .tag.proto { color: var(--blue); background: rgba(110, 168, 255, 0.08); border-color: rgba(110, 168, 255, 0.25); }
+    .tag.ref { color: var(--yellow); background: rgba(255, 209, 102, 0.08); border-color: rgba(255, 209, 102, 0.25); }
+    .tag.warn { color: var(--orange); background: rgba(255, 155, 115, 0.08); border-color: rgba(255, 155, 115, 0.25); }
+
+    .calculator {
+      display: grid;
+      grid-template-columns: 0.86fr 1.14fr;
+      gap: 18px;
+      align-items: stretch;
+    }
+    .calc-inputs, .calc-output {
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(21, 36, 67, 0.84), rgba(12, 23, 45, 0.82));
+      padding: 22px;
+    }
+    .calc-inputs h3, .calc-output h3 { margin: 0 0 16px; font-size: 18px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 13px; }
+    label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+    .input-wrap { position: relative; }
+    input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #0a1427;
+      color: var(--text);
+      border-radius: 11px;
+      padding: 10px 11px;
+      outline: none;
+    }
+    input[type="number"]:focus { border-color: rgba(94, 232, 255, 0.45); box-shadow: 0 0 0 3px rgba(94, 232, 255, 0.07); }
+    .hint { color: var(--muted-2); font-size: 10px; margin-top: 5px; line-height: 1.4; }
+    .calc-results { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; }
+    .metric {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(7, 16, 31, 0.6);
+      border: 1px solid var(--line);
+    }
+    .metric .m-label { color: var(--muted-2); font-size: 10px; }
+    .metric .m-value { margin-top: 4px; font-size: 19px; font-weight: 820; letter-spacing: -0.03em; }
+    .metric .m-sub { margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .calc-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 11px;
+      padding: 11px 13px;
+      border: 1px solid rgba(255, 209, 102, 0.18);
+      border-radius: 12px;
+      background: rgba(255, 209, 102, 0.05);
+    }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 17px;
+    }
+    .comparison .side {
+      padding: 22px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(16, 29, 55, 0.7);
+    }
+    .side h3 { margin: 0 0 12px; font-size: 22px; }
+    .side ul, .risk-list, .check-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+    .side li, .risk-list li, .check-list li {
+      position: relative;
+      padding-left: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .side li::before, .check-list li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: var(--green);
+      font-weight: 850;
+    }
+    .risk-list li::before {
+      content: "!";
+      position: absolute;
+      left: 0;
+      color: var(--orange);
+      font-weight: 850;
+    }
+
+    .filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .filter-btn {
+      cursor: pointer;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(16, 29, 55, 0.65);
+      padding: 7px 11px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+    .filter-btn.active, .filter-btn:hover {
+      color: var(--text);
+      border-color: rgba(94, 232, 255, 0.34);
+      background: rgba(94, 232, 255, 0.08);
+    }
+    .tool-row.hidden { display: none; }
+    .tool-name { display: flex; align-items: center; gap: 9px; }
+    .tool-logo {
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, rgba(94, 232, 255, 0.12), rgba(168, 140, 255, 0.13));
+      border: 1px solid var(--line);
+      font: 760 10px var(--mono);
+      color: var(--cyan);
+    }
+
+    .schema-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 17px;
+    }
+    .schema-box {
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: rgba(13, 25, 47, 0.72);
+      padding: 20px;
+    }
+    .schema-box h3 { margin: 0 0 8px; }
+    .schema-box p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 13px;
+    }
+    .phase {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(16, 29, 55, 0.65);
+    }
+    .phase-num { color: var(--cyan); font: 800 11px var(--mono); }
+    .phase h3 { margin: 8px 0 6px; font-size: 16px; }
+    .phase p { margin: 0; color: var(--muted); font-size: 12px; }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px 24px;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+      counter-reset: source;
+    }
+    .source-list li {
+      counter-increment: source;
+      position: relative;
+      padding-left: 34px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .source-list li::before {
+      content: counter(source);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 23px;
+      height: 23px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      color: var(--cyan);
+      border: 1px solid var(--line);
+      background: rgba(94, 232, 255, 0.05);
+      font: 700 10px var(--mono);
+    }
+
+    footer {
+      margin-top: 78px;
+      padding: 28px 0 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted-2);
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 1000px) {
+      .hero { grid-template-columns: 1fr; }
+      .hero-side { max-width: 720px; }
+      .stats, .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .grid-3, .roadmap { grid-template-columns: repeat(2, 1fr); }
+      .calculator, .schema-grid { grid-template-columns: 1fr; }
+      .calc-results { grid-template-columns: repeat(2, 1fr); }
+      .section-head { align-items: start; flex-direction: column; }
+    }
+
+    @media (max-width: 680px) {
+      nav { padding: 10px 16px; }
+      .brand span:last-child { display: none; }
+      main { padding: 0 16px 70px; }
+      .hero { padding: 58px 0 36px; }
+      h1 { font-size: 45px; }
+      .hero-copy { font-size: 15px; }
+      .stats, .grid-4, .grid-3, .grid-2, .comparison, .roadmap, .source-list { grid-template-columns: 1fr; }
+      .form-grid, .calc-results { grid-template-columns: 1fr; }
+      section { padding-top: 58px; }
+      .section-head h2 { font-size: 32px; }
+      .stat-card .value { font-size: 24px; }
+    }
+
+    @media print {
+      .nav-wrap, .scroll-progress, .copy-btn, .filter-row { display: none !important; }
+      body { background: white; color: #111; }
+      main { max-width: none; }
+      .card, .pipeline, .table-wrap, .calc-inputs, .calc-output, .comparison .side, .schema-box, .phase { color: #111; background: white; border-color: #ccc; box-shadow: none; break-inside: avoid; }
+      p, td, .muted, .hero-copy, .source-list li { color: #444 !important; }
+      h1, h2, h3, h4, strong { color: #111 !important; }
+      a { color: #135b9f; }
+    }
+  </style>
+</head>
+<body>
+  <div class="scroll-progress" id="scrollProgress"></div>
+
+  <div class="nav-wrap">
+    <nav>
+      <div class="brand">
+        <div class="brand-mark">#RGB</div>
+        <span>Hex Extraction at Scale</span>
+      </div>
+      <div class="nav-links">
+        <a href="#overview">结论</a>
+        <a href="#architecture">架构</a>
+        <a href="#algorithm">算法</a>
+        <a href="#calculator">规模计算</a>
+        <a href="#tools">工具</a>
+        <a href="#storage">存储</a>
+        <a href="#benchmark">Benchmark</a>
+        <a href="#sources">来源</a>
+      </div>
+    </nav>
+  </div>
+
+  <main>
+    <header class="hero">
+      <div>
+        <span class="eyebrow">Technical Blueprint · 2026-07-30</span>
+        <h1><span class="gradient-text">5B 图片 / 100B 区域</span><br />Hexcode 提取方案</h1>
+        <p class="hero-copy">
+          面向自然图像与设计图像的超大规模颜色抽取。目标不是给每个区域运行一次通用聚类，而是将任务改写为：
+          <strong>每张图只解码一次、每个像素只流式访问一次、每个区域按复杂度路由到最便宜的提取器。</strong>
+        </p>
+      </div>
+
+      <aside class="hero-side">
+        <div class="verdict-kicker">Primary recommendation</div>
+        <h2>不要对 100B 个区域逐个运行 K-Means。</h2>
+        <p>
+          生产方案应采用“区域标签图 + 单次像素扫描 + 批内局部直方图/重频候选 + 少量 fallback”。
+          若区域 Mask 已经存在，Hex 提取本身可以接近 I/O / 内存带宽受限；若 Mask 不存在，语义分割将成为主要成本。
+        </p>
+      </aside>
+
+      <div class="stats">
+        <div class="stat-card">
+          <div class="value">5B</div>
+          <div class="label">待处理图片</div>
+        </div>
+        <div class="stat-card">
+          <div class="value">100B</div>
+          <div class="label">待处理区域</div>
+        </div>
+        <div class="stat-card">
+          <div class="value">20</div>
+          <div class="label">平均区域 / 图片</div>
+        </div>
+        <div class="stat-card">
+          <div class="value">O(P)</div>
+          <div class="label">推荐主路径复杂度，P 为有效像素数</div>
+        </div>
+      </div>
+    </header>
+
+    <section id="overview">
+      <div class="section-head">
+        <div><span class="eyebrow">Executive summary</span><h2>四个最重要的决策</h2></div>
+        <p>这些决策对成本的影响远大于选择 OpenCV 还是 scikit-image。</p>
+      </div>
+
+      <div class="grid-4">
+        <article class="card">
+          <div class="card-icon">01</div>
+          <h3>分割与颜色抽取解耦</h3>
+          <p>如果已有 layer mask、label map 或 RLE，直接复用。不要为了提取颜色再运行 SAM 或 SLIC。需要语义区域时，将分割作为独立预算。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">02</div>
+          <h3>按区域复杂度自适应</h3>
+          <p>平坦设计区域用 exact mode；轻纹理用 robust medoid；自然纹理用固定 LUT 的 top-k palette；渐变输出 stops，而不是强压成一个 Hex。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">03</div>
+          <h3>批内聚合，不做区域循环</h3>
+          <p>把 image pixels 与 region labels 展平，在 GPU 上进行 segmented statistics / histogram。Python 只负责调度批次，不负责 100B 次函数调用。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">04</div>
+          <h3>存 RGB24，不存字符串</h3>
+          <p><code>#RRGGBB</code> 只是展示格式。生产数据存 <code>uint32 rgb24</code>、method、confidence 与可选 top-k，读取时再格式化为 Hex。</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        <strong>关键规模变量不是“区域数”本身，而是区域像素总量。</strong>
+        如果区域互不重叠，成本约等于全图像素数；如果是重叠图层，成本应乘以
+        <em>coverage multiplier = Σ(mask area) / image area</em>。下面的计算器已把该变量纳入。
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-head">
+        <div><span class="eyebrow">System architecture</span><h2>推荐生产流水线</h2></div>
+        <p>优先把小文件 I/O、解码、颜色管理、区域聚合和结果写出做成一个流水式 DAG，避免中间 RGB 落盘。</p>
+      </div>
+
+      <div class="pipeline">
+        <div class="pipeline-row">
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 0</div>
+            <h4>Source-aware parser</h4>
+            <p>SVG / PSD / 设计 JSON 直接读取 fill、stroke、gradient、alpha。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 1</div>
+            <h4>Sequential shard reader</h4>
+            <p>将大量小文件打包为顺序 shard，降低对象存储 GET 与 metadata 开销。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 2</div>
+            <h4>Decode once</h4>
+            <p>JPEG/PNG/WebP 批量解码；处理 EXIF orientation、alpha 与异常格式。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 3</div>
+            <h4>sRGB normalization</h4>
+            <p>Hex 按 sRGB 输出。仅非 sRGB / CMYK 数据走 ICC 慢路径。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 4</div>
+            <h4>Region interior</h4>
+            <p>加载 label map / RLE，移除边界抗锯齿像素，生成全局 region id。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 5</div>
+            <h4>Stats + router</h4>
+            <p>一次扫描统计 count、sum、variance、top-bin、sample 与 alpha。</p>
+          </div>
+          <div class="pipe-node">
+            <div class="pipe-index">Stage 6</div>
+            <h4>Columnar writer</h4>
+            <p>按 image row 写 nested region arrays，或按 shard 写扁平 Parquet。</p>
+          </div>
+        </div>
+
+        <div class="branch-grid">
+          <div class="branch exact"><b>结构化设计</b><span>直接元数据 → 精确作者色</span></div>
+          <div class="branch fast"><b>Flat region</b><span>Exact heavy hitter / quantized mode</span></div>
+          <div class="branch medium"><b>Mild texture</b><span>Sample median → nearest medoid</span></div>
+          <div class="branch slow"><b>Rich texture</b><span>Fixed LUT → top-3 palette</span></div>
+          <div class="branch gradient"><b>Gradient / alpha</b><span>Stops / RGBA / observed color</span></div>
+        </div>
+      </div>
+
+      <div class="stack-line">
+        <span class="pill"><b>I/O</b> WebDataset / large shards</span>
+        <span class="pill"><b>Decode</b> nvImageCodec or DALI</span>
+        <span class="pill"><b>CV ops</b> CV-CUDA</span>
+        <span class="pill"><b>Prototype</b> CuPy / Triton</span>
+        <span class="pill"><b>Production kernel</b> CUDA + CUB/CCCL</span>
+        <span class="pill"><b>Output</b> Arrow / Parquet</span>
+      </div>
+    </section>
+
+    <section id="algorithm">
+      <div class="section-head">
+        <div><span class="eyebrow">Adaptive Hex v1</span><h2>面向 100B 区域的算法设计</h2></div>
+        <p>先用廉价统计判断区域类型，只把少量复杂区域送入更贵的方法。所有阈值都应在你们的真实数据上校准。</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="step-list">
+          <div class="step">
+            <div><h3>源格式优先</h3><p>能拿到 SVG、PSD、HTML/CSS 或设计 JSON 时，直接读取 fill / stroke / opacity / gradient stops。该结果比从渲染像素反推更准确也更快。</p></div>
+          </div>
+          <div class="step">
+            <div><h3>统一为 sRGB 与可复现坐标</h3><p>处理 EXIF orientation；常见 sRGB/untagged 图走 fast path，只有带非 sRGB ICC、CMYK 或 wide-gamut 的数据才做完整色彩变换。</p></div>
+          </div>
+          <div class="step">
+            <div><h3>生成 interior pixels</h3><p>对 dense label map，可用“标签等于上下左右邻居”近似 1px 腐蚀；小区域不足时回退到原 mask，避免完全被腐蚀掉。</p></div>
+          </div>
+          <div class="step">
+            <div><h3>第一遍区域统计与固定采样</h3><p>聚合 area、RGB sum/sumsq、alpha、粗量化 top-bin；每个区域用 hash-based deterministic sampling 采 32–64 个 interior pixels。</p></div>
+          </div>
+          <div class="step">
+            <div><h3>路由到最便宜的方法</h3><p>Flat → exact heavy hitter；mild → sample medoid；textured → 12/15-bit LUT palette；gradient → 坐标-颜色回归与 2–5 个 stops。</p></div>
+          </div>
+          <div class="step">
+            <div><h3>输出方法与置信度</h3><p>除 rgb24 外保存 method enum、top1 ratio、color spread、border removed ratio、alpha mode 与 confidence，方便下游筛选。</p></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="code-card">
+            <div class="code-top">
+              <div class="window-dots"><i></i><i></i><i></i></div>
+              <span>batch_pipeline.py · 伪代码</span>
+              <button class="copy-btn" data-copy="code1">复制</button>
+            </div>
+            <pre id="code1"><span class="kw">for</span> batch <span class="kw">in</span> shard_reader:
+    rgb, alpha = <span class="fn">decode_to_srgb</span>(batch)       <span class="cm"># decode once</span>
+    labels = <span class="fn">load_region_labels</span>(batch)       <span class="cm"># dense/RLE</span>
+
+    interior = <span class="fn">remove_label_boundaries</span>(labels)
+    stats, samples = <span class="fn">segmented_first_pass</span>(
+        rgb, alpha, labels, interior,
+        samples_per_region=<span class="nu">64</span>, deterministic=<span class="kw">True</span>
+    )
+
+    route = <span class="fn">classify_region_complexity</span>(stats, samples)
+
+    out_flat = <span class="fn">exact_heavy_hitter</span>(rgb, labels, route.flat)
+    out_mild = <span class="fn">sample_lab_medoid</span>(samples, route.mild)
+    out_tex  = <span class="fn">lut_palette_topk</span>(rgb, labels, route.textured, k=<span class="nu">3</span>)
+    out_grad = <span class="fn">fit_gradient_stops</span>(samples, route.gradient)
+
+    rows = <span class="fn">merge_and_score</span>(stats, out_flat, out_mild, out_tex, out_grad)
+    <span class="fn">write_nested_parquet</span>(rows)             <span class="cm"># no JSON strings</span></pre>
+          </div>
+
+          <div style="height:14px"></div>
+
+          <div class="code-card">
+            <div class="code-top">
+              <div class="window-dots"><i></i><i></i><i></i></div>
+              <span>GPU prototype · 12-bit batch-local histogram</span>
+              <button class="copy-btn" data-copy="code2">复制</button>
+            </div>
+            <pre id="code2"><span class="cm"># 4 bits/channel → 4096 coarse bins</span>
+q12 = ((r &gt;&gt; <span class="nu">4</span>) &lt;&lt; <span class="nu">8</span>) | ((g &gt;&gt; <span class="nu">4</span>) &lt;&lt; <span class="nu">4</span>) | (b &gt;&gt; <span class="nu">4</span>)
+
+<span class="cm"># region ids are compacted only inside this batch</span>
+key = batch_region_id * <span class="nu">4096</span> + perceptual_lut[q12]
+hist = <span class="fn">bincount</span>(key, minlength=n_regions_batch * <span class="nu">4096</span>)
+hist = hist.reshape(n_regions_batch, <span class="nu">4096</span>)
+
+<span class="cm"># Production: replace global atomics with block-local/shared histograms</span>
+top_bins = <span class="fn">topk</span>(hist, k=<span class="nu">3</span>)</pre>
+          </div>
+        </div>
+      </div>
+
+      <div style="height:18px"></div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>方法</th>
+              <th>复杂度 / 成本</th>
+              <th>是否输出真实出现过的颜色</th>
+              <th>适合场景</th>
+              <th>在 100B 区域上的结论</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>直接解析 fill / stroke / stops</strong></td>
+              <td>接近元数据扫描</td>
+              <td>作者定义色</td>
+              <td>SVG、PSD、设计 JSON</td>
+              <td><span class="tag prod">首选</span> 最快且最准</td>
+            </tr>
+            <tr>
+              <td><strong>RGB mean</strong></td>
+              <td>O(P)，极低</td>
+              <td>不一定</td>
+              <td>真正单峰、低方差区域</td>
+              <td><span class="tag proto">可作统计</span> 不建议作为多色区域主色</td>
+            </tr>
+            <tr>
+              <td><strong>Exact heavy hitter / mode</strong></td>
+              <td>O(P)，小型候选表</td>
+              <td>是</td>
+              <td>扁平设计、文字、图标</td>
+              <td><span class="tag prod">Fast path</span> 对设计图非常重要</td>
+            </tr>
+            <tr>
+              <td><strong>12/15-bit quantized mode</strong></td>
+              <td>O(P)，固定 LUT</td>
+              <td>通常为近似色</td>
+              <td>大规模通用统计</td>
+              <td><span class="tag prod">主力</span> 可第二遍精修 winning bin</td>
+            </tr>
+            <tr>
+              <td><strong>Sample median → Lab medoid</strong></td>
+              <td>O(S)，S≈32–128</td>
+              <td>是</td>
+              <td>自然图像、轻纹理区域</td>
+              <td><span class="tag prod">推荐</span> 成本与区域面积近似解耦</td>
+            </tr>
+            <tr>
+              <td><strong>固定感知 LUT + top-k</strong></td>
+              <td>O(P)，无迭代</td>
+              <td>可选择 bin medoid</td>
+              <td>多峰纹理、自然区域 palette</td>
+              <td><span class="tag prod">推荐</span> 替代 per-region K-Means</td>
+            </tr>
+            <tr>
+              <td><strong>Hue / HSV histogram</strong></td>
+              <td>O(P)，固定 H/S/V bins</td>
+              <td>可从 winning bucket 回选 observed pixel</td>
+              <td>高饱和、色相语义明确的区域</td>
+              <td><span class="tag proto">可解释基线</span> 必须单列低饱和灰度并处理 hue 环形边界；NTC 更适合后置命名</td>
+            </tr>
+            <tr>
+              <td><strong>Pixelero 两级 RGB histogram</strong></td>
+              <td>O(P + BKI)，B≤512</td>
+              <td>centroid 通常不是 observed pixel</td>
+              <td>需要紧凑 top-k palette 的通用 RGB 图像</td>
+              <td><span class="tag proto">质量基线</span> 本次实测 coverage 最低，但慢于 native octree</td>
+            </tr>
+            <tr>
+              <td><strong>Octree quantization</strong></td>
+              <td>O(P)，树归并与原生 remap</td>
+              <td>叶节点均值通常不是 observed pixel</td>
+              <td>固定小 palette、吞吐优先</td>
+              <td><span class="tag prod">强候选</span> 本次原生实现吞吐最高；需先接受 centroid 语义</td>
+            </tr>
+            <tr>
+              <td><strong>Color Thief v3 · OKLCH/MMCQ</strong></td>
+              <td>默认每 10 像素采 1 个</td>
+              <td>quantizer centroid</td>
+              <td>Web/Node 快速 palette 与感知空间比较</td>
+              <td><span class="tag proto">速度参考</span> MIT；q10 速度不能当作全像素吞吐</td>
+            </tr>
+            <tr>
+              <td><strong>pngquant / libimagequant</strong></td>
+              <td>全图 palette 优化 + remap</td>
+              <td>palette centroid</td>
+              <td>质量与重编码稳定性优先</td>
+              <td><span class="tag warn">质量参考</span> 本次为 libimagequant 2.15.1 核心适配；需评估 GPL v3+ / 商业许可</td>
+            </tr>
+            <tr>
+              <td><strong>Per-region K-Means</strong></td>
+              <td>O(PKI) + 启动开销</td>
+              <td>中心通常不是真实像素</td>
+              <td>离线质量参考、小规模研究</td>
+              <td><span class="tag warn">避免</span> 不适合作为 100B 区域默认路径</td>
+            </tr>
+            <tr>
+              <td><strong>Gradient fitting</strong></td>
+              <td>O(S) 回归</td>
+              <td>输出 stops</td>
+              <td>线性/径向渐变</td>
+              <td><span class="tag proto">条件路径</span> 不要压缩成单一 Hex</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="calculator">
+      <div class="section-head">
+        <div><span class="eyebrow">Capacity planner</span><h2>交互式吞吐量计算器</h2></div>
+        <p>默认值对应 5B 图片、100B 区域、3 天完成。单 worker Gpixel/s 必须用你们真实 benchmark 替换。</p>
+      </div>
+
+      <div class="calculator">
+        <div class="calc-inputs">
+          <h3>规模与实测参数</h3>
+          <div class="form-grid">
+            <div>
+              <label for="imagesB">图片数量（B）</label>
+              <input id="imagesB" type="number" min="0" step="0.1" value="5" />
+            </div>
+            <div>
+              <label for="regionsB">区域数量（B）</label>
+              <input id="regionsB" type="number" min="0" step="1" value="100" />
+            </div>
+            <div>
+              <label for="avgMP">平均分辨率（MP / 图）</label>
+              <input id="avgMP" type="number" min="0.01" step="0.1" value="1" />
+            </div>
+            <div>
+              <label for="coverage">Mask coverage multiplier</label>
+              <input id="coverage" type="number" min="0.01" step="0.1" value="1" />
+              <div class="hint">互斥分区约 1；重叠图层可能显著大于 1。</div>
+            </div>
+            <div>
+              <label for="days">目标完成时间（天）</label>
+              <input id="days" type="number" min="1" step="1" value="3" />
+            </div>
+            <div>
+              <label for="fileMB">平均压缩文件大小（MB）</label>
+              <input id="fileMB" type="number" min="0" step="0.1" value="0.5" />
+            </div>
+            <div>
+              <label for="workerGPix">单 worker 实测吞吐（Gpixel/s）</label>
+              <input id="workerGPix" type="number" min="0.001" step="0.05" value="0.5" />
+              <div class="hint">必须包含 decode + region aggregation 的端到端 sustained throughput。</div>
+            </div>
+            <div>
+              <label for="safety">容量安全系数</label>
+              <input id="safety" type="number" min="1" step="0.1" value="1.5" />
+            </div>
+            <div>
+              <label for="bytesRegion">输出 payload（byte / region）</label>
+              <input id="bytesRegion" type="number" min="1" step="1" value="32" />
+            </div>
+            <div>
+              <label for="hourlyCost">单 worker 成本（货币 / 小时，可选）</label>
+              <input id="hourlyCost" type="number" min="0" step="0.1" value="0" />
+            </div>
+          </div>
+        </div>
+
+        <div class="calc-output">
+          <h3>集群级目标</h3>
+          <div class="calc-results">
+            <div class="metric"><div class="m-label">平均区域 / 图</div><div class="m-value" id="mRpi">20</div><div class="m-sub">regions per image</div></div>
+            <div class="metric"><div class="m-label">图片吞吐</div><div class="m-value" id="mIps">19.3K/s</div><div class="m-sub">cluster-wide</div></div>
+            <div class="metric"><div class="m-label">区域吞吐</div><div class="m-value" id="mRps">385.8K/s</div><div class="m-sub">cluster-wide</div></div>
+            <div class="metric"><div class="m-label">有效区域像素吞吐</div><div class="m-value" id="mGPix">19.3 Gpix/s</div><div class="m-sub">包含 mask overlap</div></div>
+            <div class="metric"><div class="m-label">压缩输入带宽</div><div class="m-value" id="mInputBW">9.65 GB/s</div><div class="m-sub">不含对象存储请求开销</div></div>
+            <div class="metric"><div class="m-label">解码 RGB 带宽</div><div class="m-value" id="mRawBW">57.9 GB/s</div><div class="m-sub">3 byte / decoded pixel</div></div>
+            <div class="metric"><div class="m-label">建议 worker 数</div><div class="m-value" id="mWorkers">58</div><div class="m-sub">已含安全系数</div></div>
+            <div class="metric"><div class="m-label">输出原始 payload</div><div class="m-value" id="mOutput">3.20 TB</div><div class="m-sub">压缩前，不含 mask</div></div>
+            <div class="metric"><div class="m-label">Worker-hours / 估算成本</div><div class="m-value" id="mCost">4.18K h</div><div class="m-sub" id="mCostSub">成本输入为 0</div></div>
+          </div>
+          <div class="calc-note">
+            该计算只覆盖 Hex 提取主流水线。若还需对 5B 图片执行语义分割、OCR、图层恢复或大模型推理，应单独按 images/s 与模型吞吐估算，并通常会成为主成本。
+          </div>
+        </div>
+      </div>
+
+      <div style="height:18px"></div>
+
+      <div class="table-wrap">
+        <table style="min-width:680px">
+          <thead><tr><th>完成时间</th><th>所需图片吞吐</th><th>所需区域吞吐</th><th>解读</th></tr></thead>
+          <tbody>
+            <tr><td><strong>3 天</strong></td><td>19,290 images/s</td><td>385,802 regions/s</td><td>当前目标；必须 decode-once、顺序 shard、批内聚合，并按 1.5× 配置约 578,704 regions/s。</td></tr>
+            <tr><td><strong>7 天</strong></td><td>8,267 images/s</td><td>165,344 regions/s</td><td>仍需高吞吐批处理，但容量峰值约为 3 天目标的 43%。</td></tr>
+            <tr><td><strong>15 天</strong></td><td>3,858 images/s</td><td>77,160 regions/s</td><td>按 1.5× 配置约 115,741 regions/s；适合做正式生产窗口的宽松备选。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="image-types">
+      <div class="section-head">
+        <div><span class="eyebrow">Image-aware policy</span><h2>设计图与自然图必须分支</h2></div>
+        <p>“一个区域对应一个 Hex”对设计元素通常合理，对自然物体通常只是人为摘要。</p>
+      </div>
+
+      <div class="comparison">
+        <div class="side">
+          <h3>设计图像 / UI / 海报</h3>
+          <ul>
+            <li>优先解析结构化源文件，保留 fill、stroke、gradient、blend mode 与 opacity。</li>
+            <li>Raster 设计图使用 interior exact mode，边界抗锯齿像素不参与主色。</li>
+            <li>winning coarse bin 可做第二遍 exact RGB heavy-hitter，恢复原始 24-bit 颜色。</li>
+            <li>半透明元素同时保存 source RGBA 与 composited observed RGB；只有截图时不能唯一反解 source color。</li>
+            <li>评价指标以 exact recovery rate、抗 JPEG/resize 稳定性和作者色偏差为主。</li>
+          </ul>
+        </div>
+        <div class="side">
+          <h3>自然图像 / 摄影 / 纹理区域</h3>
+          <ul>
+            <li>不要把光照、阴影与反射混成一个平均色；默认输出 primary medoid + top-3 palette。</li>
+            <li>代表色优先选择真实出现过的样本 medoid，而不是可能不存在的 K-Means center。</li>
+            <li>只在 sampled pixels 上进行 Lab/Oklab 计算，不要对所有 5e15 级像素全量做复杂色差运算。</li>
+            <li>可同时保存 observed color 与去除亮度极端值后的 base-color proxy，但字段语义必须明确。</li>
+            <li>评价指标以 ΔE、palette coverage、跨压缩稳定性和人工偏好为主。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="kernel">
+      <div class="section-head">
+        <div><span class="eyebrow">GPU implementation</span><h2>Kernel 级别的关键细节</h2></div>
+        <p>一个能运行的 CuPy 原型不等于一个能稳定处理 5B 图片的生产实现。</p>
+      </div>
+
+      <div class="grid-3">
+        <article class="card">
+          <div class="card-icon">A</div>
+          <h3>批内 compact region id</h3>
+          <p>每批把 region id 映射到连续的 0…R−1。不能把全球 region id 直接传给 bincount，否则输出数组会按最大 id 膨胀。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">B</div>
+          <h3>Shared-memory 局部直方图</h3>
+          <p>生产实现应按 tile / region group 做 block-local histogram 或 heavy-hitter，再合并到全局，降低热门 bin 的 atomic contention。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">C</div>
+          <h3>避免全局 32K bins × regions</h3>
+          <p>12-bit 的 4096 bins 可作为通用批内基线；15-bit 只用于小批或第二阶段。跨全数据集只保存 top-k，不保存完整 histogram。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">D</div>
+          <h3>固定 LUT 替代最近邻搜索</h3>
+          <p>预先将 12/15-bit RGB key 映射到感知 palette id；运行时每像素仅需位运算与一次 LUT load，无需在线 K-Means 或 FAISS。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">E</div>
+          <h3>确定性与可重跑</h3>
+          <p>采样位置由 image_id、region_id 与版本 seed 决定。浮点归约需定义可接受的 determinism；最终 RGB24 尽量由整数统计决定。</p>
+        </article>
+        <article class="card">
+          <div class="card-icon">F</div>
+          <h3>端到端融合</h3>
+          <p>decode → color convert → interior check → stats 尽量保持在 GPU / pinned pipeline；不要频繁 CPU↔GPU 往返或写出中间 RGB。</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        <strong>一个实用的分阶段实现：</strong>先用 CuPy/Kornia 验证正确性，再用 Triton 写 fused prototype，最后将热点路径迁移到 CUDA C++ + CUB 的 BlockHistogram / Reduce primitives。这样能兼顾迭代速度和最终吞吐。
+      </div>
+    </section>
+
+    <section id="tools">
+      <div class="section-head">
+        <div><span class="eyebrow">Open-source landscape</span><h2>开源工具选型</h2></div>
+        <p>“生产推荐”表示适合作为流水线组成部分，不代表开箱即用即可达到你们的最终吞吐；核心 region histogram 仍建议自定义。</p>
+      </div>
+
+      <div class="filter-row" id="toolFilters">
+        <button class="filter-btn active" data-filter="all">全部</button>
+        <button class="filter-btn" data-filter="production">生产推荐</button>
+        <button class="filter-btn" data-filter="gpu">GPU</button>
+        <button class="filter-btn" data-filter="cpu">CPU</button>
+        <button class="filter-btn" data-filter="prototype">原型</button>
+        <button class="filter-btn" data-filter="segmentation">分割</button>
+        <button class="filter-btn" data-filter="storage">I/O / 存储</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>项目</th>
+              <th>定位</th>
+              <th>最适合的角色</th>
+              <th>规模建议</th>
+              <th>限制 / 注意</th>
+            </tr>
+          </thead>
+          <tbody id="toolTableBody">
+            <tr class="tool-row" data-tags="production gpu storage">
+              <td><div class="tool-name"><span class="tool-logo">nIC</span><strong><a href="https://github.com/NVIDIA/nvImageCodec" target="_blank" rel="noopener">nvImageCodec</a></strong></div></td>
+              <td>GPU/CPU 加速图像 codec，统一 C/Python API</td>
+              <td>JPEG/JPEG2000/TIFF 等批量解码；零拷贝衔接 CV-CUDA、PyTorch、CuPy</td>
+              <td><span class="tag prod">生产首选</span></td>
+              <td>格式覆盖和硬件路径需用真实数据验证；非 NVIDIA 环境要准备 CPU fallback。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production gpu storage">
+              <td><div class="tool-name"><span class="tool-logo">DALI</span><strong><a href="https://github.com/NVIDIA/DALI" target="_blank" rel="noopener">NVIDIA DALI</a></strong></div></td>
+              <td>GPU 数据加载与预处理引擎</td>
+              <td>prefetch、并行执行、batch decode 与 GPU pipeline 调度</td>
+              <td><span class="tag prod">生产推荐</span></td>
+              <td>对高度自定义的区域 histogram 仍需外接 custom operator / kernel。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production gpu">
+              <td><div class="tool-name"><span class="tool-logo">CV</span><strong><a href="https://github.com/CvCuda/CV-CUDA" target="_blank" rel="noopener">CV-CUDA</a></strong></div></td>
+              <td>云规模 GPU CV operators</td>
+              <td>resize、color conversion、morphology、variable-shape batch 等前后处理</td>
+              <td><span class="tag prod">生产推荐</span></td>
+              <td>目前不是完整的 per-region palette 引擎；把它作为算子层，而非整体解决方案。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production gpu">
+              <td><div class="tool-name"><span class="tool-logo">CUB</span><strong><a href="https://github.com/NVIDIA/cccl" target="_blank" rel="noopener">CUB / CCCL</a></strong></div></td>
+              <td>CUDA 底层并行 primitives</td>
+              <td>BlockHistogram、DeviceHistogram、Reduce、Select、TopK 等生产 kernel building blocks</td>
+              <td><span class="tag prod">最终热点路径</span></td>
+              <td>开发成本高于 Python/Triton，但最适合解决局部直方图与 segmented reduction。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu prototype production">
+              <td><div class="tool-name"><span class="tool-logo">TRI</span><strong><a href="https://github.com/triton-lang/triton" target="_blank" rel="noopener">Triton</a></strong></div></td>
+              <td>Python 风格 GPU kernel language/compiler</td>
+              <td>快速实现 fused interior + sampling + stats kernel</td>
+              <td><span class="tag proto">最佳原型</span></td>
+              <td>复杂共享哈希、动态 region sizes 与极致调优时，CUDA C++ 可能更灵活。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu prototype">
+              <td><div class="tool-name"><span class="tool-logo">CuPy</span><strong><a href="https://github.com/cupy/cupy" target="_blank" rel="noopener">CuPy</a></strong></div></td>
+              <td>GPU NumPy / SciPy</td>
+              <td>验证 batch-local bincount、LUT、top-k 与统计逻辑</td>
+              <td><span class="tag proto">正确性原型</span></td>
+              <td><code>bincount</code> 可能触发同步；global atomics 与巨大 minlength 不适合作为最终实现。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production cpu storage">
+              <td><div class="tool-name"><span class="tool-logo">VIP</span><strong><a href="https://github.com/libvips/libvips" target="_blank" rel="noopener">libvips / pyvips</a></strong></div></td>
+              <td>低内存、需求驱动、多线程 CPU 图像处理</td>
+              <td>CPU fallback、格式兼容、thumbnail / ICC / histogram 基线</td>
+              <td><span class="tag prod">CPU 首选</span></td>
+              <td>区域级自定义聚合仍建议写 C/C++ extension；许可证为 LGPL-2.1-or-later。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu cpu prototype segmentation">
+              <td><div class="tool-name"><span class="tool-logo">OCV</span><strong><a href="https://docs.opencv.org/" target="_blank" rel="noopener">OpenCV</a></strong></div></td>
+              <td>通用 CV 工具箱，含 CPU/CUDA 模块</td>
+              <td>connected components、颜色转换、形态学、参考 K-Means</td>
+              <td><span class="tag proto">基线 / 辅助</span></td>
+              <td>不要在 Python 中对每个区域调用 <code>cv::kmeans</code>；连接域可用于 raster design 分区。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu prototype segmentation">
+              <td><div class="tool-name"><span class="tool-logo">cuCIM</span><strong><a href="https://github.com/rapidsai/cucim" target="_blank" rel="noopener">RAPIDS cuCIM</a></strong></div></td>
+              <td>GPU 加速、接近 scikit-image API 的图像处理</td>
+              <td>颜色、形态学、分割、measure 的 GPU 原型</td>
+              <td><span class="tag proto">高效原型</span></td>
+              <td>项目重点包含多维/科学图像；对通用 web image pipeline 的 operator 覆盖需逐项确认。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu prototype">
+              <td><div class="tool-name"><span class="tool-logo">K</span><strong><a href="https://github.com/kornia/kornia" target="_blank" rel="noopener">Kornia</a></strong></div></td>
+              <td>基于 PyTorch 的可微 CV</td>
+              <td>GPU RGB↔Lab、几何/颜色处理与研究代码</td>
+              <td><span class="tag proto">研究 / 验证</span></td>
+              <td>易用但未必是极致吞吐；全像素 Lab 转换不应成为默认生产路径。</td>
+            </tr>
+            <tr class="tool-row" data-tags="cpu prototype">
+              <td><div class="tool-name"><span class="tool-logo">LIQ</span><strong><a href="https://github.com/ImageOptim/libimagequant" target="_blank" rel="noopener">libimagequant</a></strong></div></td>
+              <td>高质量 RGBA palette quantization</td>
+              <td>质量参考、设计图 palette baseline、alpha-aware quantization</td>
+              <td><span class="tag ref">质量基线</span></td>
+              <td>面向整图量化而非 100B 区域聚合；GPLv3+ / 商业双重许可需要法务评估。</td>
+            </tr>
+            <tr class="tool-row" data-tags="cpu prototype segmentation">
+              <td><div class="tool-name"><span class="tool-logo">SLIC</span><strong><a href="https://github.com/Algy/fast-slic" target="_blank" rel="noopener">fast-slic</a></strong></div></td>
+              <td>快速 CPU SLIC 变体</td>
+              <td>当没有区域且只需视觉超像素时的研究基线</td>
+              <td><span class="tag ref">可测试</span></td>
+              <td>仓库宣称比既有 SLIC 快 7–20×，但长期缺少更新；不建议直接作为关键生产依赖。</td>
+            </tr>
+            <tr class="tool-row" data-tags="cpu prototype segmentation">
+              <td><div class="tool-name"><span class="tool-logo">SKI</span><strong><a href="https://github.com/scikit-image/scikit-image" target="_blank" rel="noopener">scikit-image</a></strong></div></td>
+              <td>高质量 Python 图像算法参考实现</td>
+              <td>SLIC、Lab、ΔE、morphology、regionprops 与评测</td>
+              <td><span class="tag ref">Reference</span></td>
+              <td>非常适合建立 CPU gold baseline；不适合直接承担 5B 图片主流水线。</td>
+            </tr>
+            <tr class="tool-row" data-tags="gpu segmentation prototype">
+              <td><div class="tool-name"><span class="tool-logo">SAM2</span><strong><a href="https://github.com/facebookresearch/sam2" target="_blank" rel="noopener">Meta SAM 2</a></strong></div></td>
+              <td>可提示图像/视频分割基础模型</td>
+              <td>只有在缺少区域且确实需要语义 object masks 时使用</td>
+              <td><span class="tag warn">独立预算</span></td>
+              <td>自动 mask generation 会显著增加成本；对纯 Hex 提取不是默认组件。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production storage cpu">
+              <td><div class="tool-name"><span class="tool-logo">WDS</span><strong><a href="https://github.com/webdataset/webdataset" target="_blank" rel="noopener">WebDataset</a></strong></div></td>
+              <td>基于 TAR shard 的流式数据格式与 loader</td>
+              <td>将海量小图片和 mask 打包为顺序读取 shard</td>
+              <td><span class="tag prod">强烈推荐</span></td>
+              <td>需要规划 shard size、失败重试、索引与版本；不要把单 shard 做得过大。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production storage cpu gpu">
+              <td><div class="tool-name"><span class="tool-logo">RAY</span><strong><a href="https://docs.ray.io/en/latest/data/data.html" target="_blank" rel="noopener">Ray Data</a></strong></div></td>
+              <td>面向 AI workload 的分布式数据处理</td>
+              <td>批量 GPU worker 调度、backpressure、失败恢复与分布式写出</td>
+              <td><span class="tag proto">编排可选</span></td>
+              <td>不是必须；已有 Spark/Beam/内部平台时优先复用，避免新增复杂度。</td>
+            </tr>
+            <tr class="tool-row" data-tags="production storage cpu">
+              <td><div class="tool-name"><span class="tool-logo">PQ</span><strong><a href="https://parquet.apache.org/" target="_blank" rel="noopener">Apache Arrow / Parquet</a></strong></div></td>
+              <td>列式内存与文件格式</td>
+              <td>紧凑保存 rgb24、method、confidence 与 nested region arrays</td>
+              <td><span class="tag prod">输出首选</span></td>
+              <td>避免按 image_id 做高基数目录分区；控制文件数量和 row group 大小。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="storage">
+      <div class="section-head">
+        <div><span class="eyebrow">Data contract</span><h2>输出格式与存储设计</h2></div>
+        <p>100B region rows 的逻辑规模很大，但颜色字段本身很小。真正的问题是行数、重复 image_id、文件数量与读取局部性。</p>
+      </div>
+
+      <div class="schema-grid">
+        <div class="schema-box">
+          <h3>推荐：一行一张图，区域为 nested arrays</h3>
+          <p>将行数从 100B 降到 5B，避免重复保存 image_id，并让同一图片的区域保持局部性。</p>
+          <div class="code-card">
+            <div class="code-top"><span>Arrow-like schema</span><button class="copy-btn" data-copy="code3">复制</button></div>
+            <pre id="code3">image_id: uint64
+source_shard: uint32
+width: uint16
+height: uint16
+regions: list&lt;struct&lt;
+  region_id: uint32,
+  rgb24: uint32,          <span class="cm"># 0xRRGGBB</span>
+  method: uint8,
+  confidence: uint8,
+  area: uint32,
+  top1_ratio_q16: uint16,
+  palette_rgb24: fixed_size_list&lt;uint32&gt;[3],
+  palette_ratio_q16: fixed_size_list&lt;uint16&gt;[3],
+  alpha_q8: uint8,
+  flags: uint16
+&gt;&gt;</pre>
+          </div>
+        </div>
+        <div class="schema-box">
+          <h3>备选：扁平 region table</h3>
+          <p>查询单区域更直观，但会重复 image_id；适合需要 Spark/SQL 大量 region-level filter 的场景。</p>
+          <div class="code-card">
+            <div class="code-top"><span>Flat schema</span><button class="copy-btn" data-copy="code4">复制</button></div>
+            <pre id="code4">image_id: uint64
+region_id: uint32
+rgb24: uint32
+method: uint8
+confidence: uint8
+area: uint32
+top1_ratio_q16: uint16
+palette0_rgb24: uint32
+palette1_rgb24: uint32
+palette2_rgb24: uint32
+flags: uint16</pre>
+          </div>
+        </div>
+      </div>
+
+      <div style="height:17px"></div>
+
+      <div class="grid-3">
+        <article class="card"><div class="card-icon">RGB</div><h3>Hex 延迟格式化</h3><p><code>rgb24 = (R&lt;&lt;16)|(G&lt;&lt;8)|B</code>。只有在 UI、日志或导出 CSV 时生成 <code>#RRGGBB</code> 字符串。</p></article>
+        <article class="card"><div class="card-icon">IO</div><h3>低基数 partition</h3><p>按 dataset version、source、hash prefix 或原始 shard 分区。不要为每张图、每个日期或每种颜色创建目录。</p></article>
+        <article class="card"><div class="card-icon">V</div><h3>版本与幂等</h3><p>保存 algorithm_version、LUT checksum、sampling seed 与 source checksum；重跑同一 shard 应覆盖或原子提交同一输出。</p></article>
+      </div>
+    </section>
+
+    <section id="benchmark">
+      <div class="section-head">
+        <div><span class="eyebrow">Validation plan</span><h2>Benchmark 与上线计划</h2></div>
+        <p>先证明颜色质量，再证明 kernel，再证明端到端 shard throughput。不要用单张 224×224 图的 microbenchmark 推断生产成本。</p>
+      </div>
+
+      <div class="roadmap">
+        <div class="phase"><div class="phase-num">PHASE 01</div><h3>Gold reference</h3><p>抽取 100K–1M 图片；用 scikit-image / OpenCV / libimagequant 建立慢但可信的 CPU reference，并构造带已知 fill 的合成 SVG benchmark。</p></div>
+        <div class="phase"><div class="phase-num">PHASE 02</div><h3>GPU prototype</h3><p>CuPy/Kornia 实现 batch-local q12 histogram、64-sample medoid 与 gradient detector；测量质量与显存。</p></div>
+        <div class="phase"><div class="phase-num">PHASE 03</div><h3>Fused kernel</h3><p>Triton 或 CUDA/CUB 融合 interior、sampling、stats 与 top-k；在真实 shard 上测 sustained Gpixel/s 和 GPU utilization。</p></div>
+        <div class="phase"><div class="phase-num">PHASE 04</div><h3>1B-region pilot</h3><p>执行约 1B 区域的灰度发布，验证失败重试、输出一致性、长尾格式、成本与下游可用性后再扩大。</p></div>
+      </div>
+
+      <div style="height:18px"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>质量指标</h3>
+          <ul class="check-list">
+            <li>结构化设计：作者色 exact match rate、gradient stops recovery、alpha recovery。</li>
+            <li>Raster 设计：抗锯齿边界移除后 exact/ΔE00、JPEG quality 与 resize 稳定性。</li>
+            <li>自然图像：primary medoid ΔE、top-3 palette coverage、人工 preference。</li>
+            <li>路由准确性：flat / texture / gradient 误分率与 fallback 比例。</li>
+            <li>可复现性：同版本跨重跑、跨 worker、跨 GPU 的 rgb24 一致率。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>系统指标</h3>
+          <ul class="check-list">
+            <li>端到端 images/s、regions/s、effective Gpixel/s，而非仅 kernel latency。</li>
+            <li>对象存储 GET/s、compressed GB/s、decode utilization、GPU idle ratio。</li>
+            <li>每 1B regions 的 worker-hours、失败重试比例与输出 TB。</li>
+            <li>P50/P95/P99 图像处理时延，按格式、分辨率、region count 分桶。</li>
+            <li>坏图、超大图、CMYK、wide-gamut、透明 PNG 与重叠 mask 的长尾占比。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style="height:18px"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>建议的第一版默认参数</h3>
+          <ul class="check-list">
+            <li>每区域 deterministic interior sample：64 pixels；小区域使用全部像素。</li>
+            <li>通用 coarse palette：q12（4 bits/channel，4096 bins）。</li>
+            <li>Flat 区域：top1 coarse ratio + sampled color spread 双条件。</li>
+            <li>自然图：primary medoid + 3-color palette；比例量化为 uint16。</li>
+            <li>边界：1px label-neighbor interior；低于最小核心面积时取消腐蚀。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>必须避免的坑</h3>
+          <ul class="risk-list">
+            <li>对 100B regions 启动 100B 次 Python 函数或 GPU kernel。</li>
+            <li>将 global region id 作为 bincount index，意外申请超大数组。</li>
+            <li>对全部像素执行 CIEDE2000 / K-Means，而不是仅对 sampled fallback。</li>
+            <li>忽略 ICC / CMYK / alpha，却把输出称为“原始设计色”。</li>
+            <li>以 JSONL 保存 Hex 字符串，导致不必要的体积与解析成本。</li>
+            <li>把 SAM/SLIC 的成本算进“颜色抽取”却没有单独测量。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="section-head">
+        <div><span class="eyebrow">Primary references</span><h2>官方资料与项目链接</h2></div>
+        <p>工具能力与维护状态于 2026-07-30 核对。实际部署前仍应锁定版本并运行你们自己的兼容性测试。</p>
+      </div>
+
+      <ol class="source-list">
+        <li><a href="https://github.com/NVIDIA/nvImageCodec" target="_blank" rel="noopener">NVIDIA nvImageCodec</a>：批处理、异构格式、自动 fallback、与 CV-CUDA/PyTorch/CuPy 的零拷贝接口。</li>
+        <li><a href="https://github.com/NVIDIA/DALI" target="_blank" rel="noopener">NVIDIA DALI</a>：GPU 数据加载、prefetch、并行执行与批处理引擎。</li>
+        <li><a href="https://github.com/CvCuda/CV-CUDA" target="_blank" rel="noopener">CV-CUDA</a>：面向云规模的 GPU 图像处理 operators。</li>
+        <li><a href="https://nvidia.github.io/cccl/unstable/cub/api/structcub_1_1DeviceHistogram.html" target="_blank" rel="noopener">CUB DeviceHistogram</a> 与 <a href="https://nvidia.github.io/cccl/unstable/cub/api/classcub_1_1BlockHistogram.html" target="_blank" rel="noopener">BlockHistogram</a>：自定义 histogram kernel 的核心 primitives。</li>
+        <li><a href="https://triton-lang.org/main/index.html" target="_blank" rel="noopener">Triton</a>：Python 风格的高吞吐 GPU kernel 编程环境。</li>
+        <li><a href="https://github.com/libvips/libvips" target="_blank" rel="noopener">libvips</a>：低内存、需求驱动、水平多线程 CPU 图像处理。</li>
+        <li><a href="https://github.com/rapidsai/cucim" target="_blank" rel="noopener">RAPIDS cuCIM</a>：GPU 图像处理、分割与 measure 原型。</li>
+        <li><a href="https://kornia.readthedocs.io/en/latest/color.html" target="_blank" rel="noopener">Kornia color</a>：PyTorch tensor 上的颜色空间转换。</li>
+        <li><a href="https://github.com/ImageOptim/libimagequant" target="_blank" rel="noopener">libimagequant</a>：高质量 RGBA palette quantization 与许可证说明。</li>
+        <li><a href="https://github.com/Algy/fast-slic" target="_blank" rel="noopener">fast-slic</a>：快速 CPU SLIC 研究实现。</li>
+        <li><a href="https://github.com/facebookresearch/sam2" target="_blank" rel="noopener">Meta SAM 2</a>：需要语义区域时的可提示分割模型。</li>
+        <li><a href="https://github.com/webdataset/webdataset" target="_blank" rel="noopener">WebDataset</a>：以 TAR shards 顺序流式读取海量媒体文件。</li>
+        <li><a href="https://arrow.apache.org/docs/index.html" target="_blank" rel="noopener">Apache Arrow</a> 与 <a href="https://parquet.apache.org/" target="_blank" rel="noopener">Parquet</a>：列式内存/文件格式。</li>
+        <li><a href="https://www.w3.org/TR/css-color-4/" target="_blank" rel="noopener">W3C CSS Color 4</a>：Hex notation 表示 sRGB；包含 alpha、wide-gamut 与颜色转换规范。</li>
+        <li><a href="https://pillow.readthedocs.io/en/stable/reference/ImageCms.html" target="_blank" rel="noopener">Pillow ImageCms</a> 与 <a href="https://opencolorio.org/" target="_blank" rel="noopener">OpenColorIO</a>：ICC / 生产色彩管理参考。</li>
+      </ol>
+    </section>
+
+    <footer>
+      <span>Hex Extraction at Scale · 单文件离线网页</span>
+      <span>核心建议：source-aware → O(P) batched aggregation → adaptive fallback → compact rgb24 storage</span>
+    </footer>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function compactNumber(value, digits = 2) {
+      if (!Number.isFinite(value)) return "—";
+      const abs = Math.abs(value);
+      const units = [
+        [1e12, "T"],
+        [1e9, "B"],
+        [1e6, "M"],
+        [1e3, "K"],
+      ];
+      for (const [scale, suffix] of units) {
+        if (abs >= scale) return (value / scale).toFixed(abs >= scale * 100 ? 0 : digits).replace(/\.00$/, "") + suffix;
+      }
+      return value.toFixed(value >= 100 ? 0 : digits).replace(/\.00$/, "");
+    }
+
+    function calculate() {
+      const images = Math.max(0, Number($("imagesB").value)) * 1e9;
+      const regions = Math.max(0, Number($("regionsB").value)) * 1e9;
+      const avgMP = Math.max(0.0001, Number($("avgMP").value));
+      const coverage = Math.max(0.0001, Number($("coverage").value));
+      const days = Math.max(1, Number($("days").value));
+      const fileMB = Math.max(0, Number($("fileMB").value));
+      const workerGPix = Math.max(0.000001, Number($("workerGPix").value));
+      const safety = Math.max(1, Number($("safety").value));
+      const bytesRegion = Math.max(1, Number($("bytesRegion").value));
+      const hourlyCost = Math.max(0, Number($("hourlyCost").value));
+
+      const seconds = days * 86400;
+      const imagesPerSec = images / seconds;
+      const regionsPerSec = regions / seconds;
+      const regionsPerImage = images > 0 ? regions / images : 0;
+      const imagePixels = images * avgMP * 1e6;
+      const effectiveRegionPixels = imagePixels * coverage;
+      const requiredGPix = effectiveRegionPixels / seconds / 1e9;
+      const compressedGBps = images * fileMB / seconds / 1000;
+      const decodedRGBGBps = imagePixels * 3 / seconds / 1e9;
+      const workers = Math.max(1, Math.ceil(requiredGPix / workerGPix * safety));
+      const outputTB = regions * bytesRegion / 1e12;
+      const workerHours = workers * days * 24;
+      const cost = workerHours * hourlyCost;
+
+      $("mRpi").textContent = compactNumber(regionsPerImage, 1);
+      $("mIps").textContent = compactNumber(imagesPerSec, 1) + "/s";
+      $("mRps").textContent = compactNumber(regionsPerSec, 1) + "/s";
+      $("mGPix").textContent = requiredGPix.toFixed(requiredGPix >= 10 ? 1 : 2) + " Gpix/s";
+      $("mInputBW").textContent = compressedGBps.toFixed(compressedGBps >= 10 ? 1 : 2) + " GB/s";
+      $("mRawBW").textContent = decodedRGBGBps.toFixed(decodedRGBGBps >= 10 ? 1 : 2) + " GB/s";
+      $("mWorkers").textContent = workers.toLocaleString("en-US");
+      $("mOutput").textContent = outputTB.toFixed(outputTB >= 10 ? 1 : 2) + " TB";
+      $("mCost").textContent = compactNumber(workerHours, 2) + " h";
+      $("mCostSub").textContent = hourlyCost > 0 ? "估算成本：" + compactNumber(cost, 2) : "成本输入为 0";
+    }
+
+    document.querySelectorAll('input[type="number"]').forEach((input) => {
+      input.addEventListener("input", calculate);
+    });
+    calculate();
+
+    document.querySelectorAll(".copy-btn").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const target = document.getElementById(button.dataset.copy);
+        const text = target.innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          const old = button.textContent;
+          button.textContent = "已复制";
+          setTimeout(() => button.textContent = old, 1200);
+        } catch (e) {
+          button.textContent = "复制失败";
+          setTimeout(() => button.textContent = "复制", 1200);
+        }
+      });
+    });
+
+    const filters = document.querySelectorAll(".filter-btn");
+    const rows = document.querySelectorAll(".tool-row");
+    filters.forEach((button) => {
+      button.addEventListener("click", () => {
+        filters.forEach((b) => b.classList.remove("active"));
+        button.classList.add("active");
+        const filter = button.dataset.filter;
+        rows.forEach((row) => {
+          const tags = row.dataset.tags.split(" ");
+          row.classList.toggle("hidden", filter !== "all" && !tags.includes(filter));
+        });
+      });
+    });
+
+    function updateProgress() {
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const ratio = maxScroll > 0 ? window.scrollY / maxScroll : 0;
+      $("scrollProgress").style.width = Math.min(100, Math.max(0, ratio * 100)) + "%";
+    }
+    window.addEventListener("scroll", updateProgress, { passive: true });
+    updateProgress();
+  </script>
+</body>
+</html>

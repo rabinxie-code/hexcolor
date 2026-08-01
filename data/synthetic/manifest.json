@@ -1,0 +1,38 @@
+[
+  {
+    "case_id": "solid",
+    "path": "data/synthetic/solid.png",
+    "expected_hex": "#D24A43",
+    "expected_route": "flat"
+  },
+  {
+    "case_id": "mild_texture",
+    "path": "data/synthetic/mild_texture.png",
+    "expected_hex": "#2E7EAB",
+    "expected_route": "mild"
+  },
+  {
+    "case_id": "linear_gradient",
+    "path": "data/synthetic/linear_gradient.png",
+    "expected_hex": "#857B6D",
+    "expected_route": "gradient"
+  },
+  {
+    "case_id": "four_color_texture",
+    "path": "data/synthetic/four_color_texture.png",
+    "expected_hex": null,
+    "expected_route": "texture"
+  },
+  {
+    "case_id": "transparent_fill",
+    "path": "data/synthetic/transparent_fill.png",
+    "expected_hex": "#5CD38E",
+    "expected_route": "flat"
+  },
+  {
+    "case_id": "gray_gradient",
+    "path": "data/synthetic/gray_gradient.png",
+    "expected_hex": "#7D7D7D",
+    "expected_route": "gradient"
+  }
+]

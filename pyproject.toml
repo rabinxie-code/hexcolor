@@ -1,0 +1,17 @@
+[project]
+name = "hexbench"
+version = "0.1.0"
+description = "Reference implementations and benchmarks for 100B crop-level HEX annotation"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "Pillow>=11.0",
+  "scikit-image>=0.25",
+  "imagequant==1.1.5",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pyright]
+include = ["hexbench", "scripts", "tests"]
