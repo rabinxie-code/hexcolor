@@ -8,9 +8,11 @@ from importlib.metadata import PackageNotFoundError, version
 import numpy as np
 from PIL import Image
 
-from .color import as_rgb_tuple, oklab_to_srgb, pack_rgb24, q12_keys, rgb_to_hex, srgb_to_oklab
+from .color import as_rgb_tuple, oklab_to_srgb, pack_rgb24, q12_keys, rgb_to_hex, srgb_to_oklab, unpack_rgb24
 from .images import image_to_pixels
 from .models import ExtractionResult
+
+DEFAULT_PALETTE_SIZE = 5
 
 
 def _seed_from_id(image_id: str) -> int:
@@ -178,20 +180,22 @@ def adaptive_hex_v1(image: Image.Image, image_id: str = "") -> ExtractionResult:
     else:
         route = "texture"
 
-    q_palette, q_weights, q_bins = _palette_from_q12(pixels, weights, keys, histogram, count=3)
+    q_palette, q_weights, q_bins = _palette_from_q12(
+        pixels, weights, keys, histogram, count=DEFAULT_PALETTE_SIZE
+    )
     if route == "flat":
         winning = int(top_bins[0])
         mask = keys == winning
         primary = _exact_heavy_hitter(pixels[mask], weights[mask])
         palette = (primary,) + tuple(color for color in q_palette if color != primary)
-        palette = palette[:3]
+        palette = palette[:DEFAULT_PALETTE_SIZE]
         output_weights = (top1_ratio,) + tuple(q_weights[index] for index, color in enumerate(q_palette) if color != primary)
         output_weights = output_weights[: len(palette)]
         confidence = 0.55 + 0.45 * top1_ratio
     elif route == "mild":
         primary = _observed_representative(sample_pixels)
         palette = (primary,) + tuple(color for color in q_palette if color != primary)
-        palette = palette[:3]
+        palette = palette[:DEFAULT_PALETTE_SIZE]
         output_weights = (max(0.0, 1.0 - spread * 4.0),) + q_weights[: max(0, len(palette) - 1)]
         confidence = max(0.25, min(0.95, 1.0 - spread * 4.0))
     elif route == "gradient":
@@ -301,7 +305,7 @@ def tencent_hsv_histogram(image: Image.Image, image_id: str = "", hue_bins: int 
             continue
         palette.append(candidate)
         ratios.append(float(histogram[key] / total))
-        if len(palette) == 3:
+        if len(palette) == DEFAULT_PALETTE_SIZE:
             break
 
     confidence = min(1.0, max(ratios[0], float(smoothed[winning_hue] / max(np.sum(smoothed), 1e-12))))
@@ -349,7 +353,9 @@ def _visible_palette_from_rgba(
     return palette, weights
 
 
-def pngquant_libimagequant(image: Image.Image, image_id: str = "", palette_size: int = 3) -> ExtractionResult:
+def pngquant_libimagequant(
+    image: Image.Image, image_id: str = "", palette_size: int = DEFAULT_PALETTE_SIZE
+) -> ExtractionResult:
     """Use pngquant's libimagequant engine on decoded RGBA pixels.
 
     The PNG encoder and dithering are deliberately excluded because this task
@@ -405,7 +411,9 @@ def pngquant_libimagequant(image: Image.Image, image_id: str = "", palette_size:
     )
 
 
-def octree_quantization(image: Image.Image, image_id: str = "", palette_size: int = 3) -> ExtractionResult:
+def octree_quantization(
+    image: Image.Image, image_id: str = "", palette_size: int = DEFAULT_PALETTE_SIZE
+) -> ExtractionResult:
     """Native fast-octree adapter for the Gervautz–Purgathofer method family."""
 
     del image_id
@@ -509,7 +517,7 @@ def pixelero_rgb_histogram(
     image: Image.Image,
     image_id: str = "",
     channel_clusters: int = 8,
-    palette_size: int = 3,
+    palette_size: int = DEFAULT_PALETTE_SIZE,
 ) -> ExtractionResult:
     """Deterministic completion of Pixelero's two-stage RGB histogram sketch."""
 
@@ -560,6 +568,242 @@ def pixelero_rgb_histogram(
     )
 
 
+def _hsv_weighted_bins(
+    pixels: np.ndarray,
+    weights: np.ndarray,
+    hue_bins: int = 60,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return weighted RGB representatives of Tencent-style HSV buckets."""
+
+    hue, saturation, value = _hsv_arrays(pixels)
+    hue_index = np.minimum((hue * hue_bins).astype(np.int32), hue_bins - 1)
+    saturation_index = np.minimum((saturation * 4).astype(np.int32), 3)
+    value_index = np.minimum((value * 4).astype(np.int32), 3)
+    achromatic = saturation < 0.08
+    keys = np.where(
+        achromatic,
+        hue_bins * 16 + value_index,
+        hue_index * 16 + saturation_index * 4 + value_index,
+    ).astype(np.int32)
+    bin_count = hue_bins * 16 + 4
+    bin_weights = np.bincount(keys, weights=weights, minlength=bin_count).astype(np.float64)
+    occupied = np.flatnonzero(bin_weights > 0)
+    sums = np.stack(
+        [np.bincount(keys, weights=weights * pixels[:, channel], minlength=bin_count) for channel in range(3)],
+        axis=1,
+    )
+    return sums[occupied] / bin_weights[occupied, None], bin_weights[occupied]
+
+
+def _pixelero_weighted_bins(
+    pixels: np.ndarray,
+    weights: np.ndarray,
+    channel_clusters: int = 8,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the occupied adaptive RGB bins from Pixelero's first stage."""
+
+    channel_centroids = [
+        _weighted_channel_centroids(pixels[:, channel], weights, channel_clusters) for channel in range(3)
+    ]
+    channel_indexes = [
+        np.argmin(np.abs(pixels[:, channel, None] - channel_centroids[channel][None, :]), axis=1)
+        for channel in range(3)
+    ]
+    green_bins = len(channel_centroids[1])
+    blue_bins = len(channel_centroids[2])
+    keys = (channel_indexes[0] * green_bins + channel_indexes[1]) * blue_bins + channel_indexes[2]
+    bin_count = len(channel_centroids[0]) * green_bins * blue_bins
+    bin_weights = np.bincount(keys, weights=weights, minlength=bin_count).astype(np.float64)
+    occupied = np.flatnonzero(bin_weights > 0)
+    sums = np.stack(
+        [np.bincount(keys, weights=weights * pixels[:, channel], minlength=bin_count) for channel in range(3)],
+        axis=1,
+    )
+    return sums[occupied] / bin_weights[occupied, None], bin_weights[occupied]
+
+
+def _centroid_result(
+    method: str,
+    centroids: np.ndarray,
+    populations: np.ndarray,
+    route: str,
+    diagnostics: dict[str, object],
+) -> ExtractionResult:
+    palette_array = np.clip(np.rint(centroids), 0, 255).astype(np.uint8)
+    palette = tuple(as_rgb_tuple(color) for color in palette_array)
+    total = max(float(np.sum(populations)), 1e-12)
+    output_weights = tuple(float(value / total) for value in populations)
+    return ExtractionResult(
+        method=method,
+        primary=palette[0],
+        palette=palette,
+        weights=output_weights,
+        confidence=output_weights[0],
+        route=route,
+        observed=False,
+        diagnostics={
+            **diagnostics,
+            "valid_bins": int(len(centroids)),
+            "output_semantics": "weighted bin centroid; not guaranteed to occur in source pixels",
+        },
+    )
+
+
+def hsv_bins_pixelero_kmeans(
+    image: Image.Image,
+    image_id: str = "",
+    palette_size: int = DEFAULT_PALETTE_SIZE,
+) -> ExtractionResult:
+    """Tencent HSV bins followed by Pixelero's weighted RGB k-means."""
+
+    del image_id
+    data = image_to_pixels(image)
+    weights = data.weights.astype(np.float64, copy=False)
+    bins, bin_weights = _hsv_weighted_bins(data.pixels, weights)
+    centroids, populations = _weighted_rgb_kmeans(bins, bin_weights, palette_size)
+    return _centroid_result(
+        "hsv_pixelero_kmeans",
+        centroids,
+        populations,
+        "hsv_bins_rgb_kmeans",
+        {"binning": "Tencent 60H × 4S × 4V + achromatic", "clustering": "Pixelero weighted RGB k-means"},
+    )
+
+
+def pixelero_bins_hsv_clustering(
+    image: Image.Image,
+    image_id: str = "",
+    palette_size: int = DEFAULT_PALETTE_SIZE,
+) -> ExtractionResult:
+    """Pixelero adaptive RGB bins followed by Tencent-style HSV bucket merging."""
+
+    del image_id
+    data = image_to_pixels(image)
+    weights = data.weights.astype(np.float64, copy=False)
+    rgb_bins, rgb_weights = _pixelero_weighted_bins(data.pixels, weights)
+    hsv_bins, hsv_weights = _hsv_weighted_bins(
+        np.clip(np.rint(rgb_bins), 0, 255).astype(np.uint8),
+        rgb_weights,
+    )
+    order = np.argsort(hsv_weights)[::-1][:palette_size]
+    return _centroid_result(
+        "pixelero_hsv_cluster",
+        hsv_bins[order],
+        hsv_weights[order],
+        "pixelero_bins_hsv_merge",
+        {"binning": "Pixelero adaptive per-channel RGB", "clustering": "Tencent 60H × 4S × 4V bucket merge"},
+    )
+
+
+def hsv_bins_octree_quantization(
+    image: Image.Image,
+    image_id: str = "",
+    palette_size: int = DEFAULT_PALETTE_SIZE,
+) -> ExtractionResult:
+    """Tencent HSV bins converted to a weighted pseudo-image, then FASTOCTREE."""
+
+    del image_id
+    data = image_to_pixels(image)
+    weights = data.weights.astype(np.float64, copy=False)
+    bins, bin_weights = _hsv_weighted_bins(data.pixels, weights)
+    sample_budget = 8192
+    counts = np.maximum(1, np.rint(bin_weights / max(float(bin_weights.sum()), 1e-12) * sample_budget).astype(np.int32))
+    samples = np.repeat(np.clip(np.rint(bins), 0, 255).astype(np.uint8), counts, axis=0)
+    rgba = np.concatenate((samples, np.full((len(samples), 1), 255, dtype=np.uint8)), axis=1)
+    pseudo_image = Image.fromarray(rgba.reshape(1, len(rgba), 4), mode="RGBA")
+    quantized = pseudo_image.quantize(colors=palette_size, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+    palette_rgba = np.asarray(quantized.getpalette("RGBA"), dtype=np.uint8).reshape(-1, 4)
+    populations = np.zeros(len(palette_rgba), dtype=np.float64)
+    for population, index in quantized.getcolors(maxcolors=256) or []:
+        populations[int(index)] = float(population)
+    palette, output_weights = _visible_palette_from_rgba(palette_rgba, populations, palette_size)
+    return ExtractionResult(
+        method="hsv_octree",
+        primary=palette[0],
+        palette=palette,
+        weights=output_weights,
+        confidence=output_weights[0],
+        route="hsv_bins_fast_octree",
+        observed=False,
+        diagnostics={
+            "binning": "Tencent 60H × 4S × 4V + achromatic",
+            "clustering": "Pillow FASTOCTREE over 8192 weighted HSV-bin representatives",
+            "occupied_hsv_bins": int(len(bins)),
+            "output_semantics": "octree leaf mean; not guaranteed to occur in source pixels",
+        },
+    )
+
+
+def _map_palette_to_weighted_observed(
+    image: Image.Image,
+    result: ExtractionResult,
+    method: str,
+) -> ExtractionResult:
+    """Map each palette entry to a nearby observed color, favouring frequent exact colors."""
+
+    data = image_to_pixels(image)
+    packed = pack_rgb24(data.pixels)
+    unique, inverse = np.unique(packed, return_inverse=True)
+    mass = np.bincount(inverse, weights=data.weights.astype(np.float64, copy=False))
+    candidates = unpack_rgb24(unique)
+    candidate_lab = srgb_to_oklab(candidates)
+    frequency_factor = 0.25 + 0.75 * np.sqrt(mass / max(float(np.max(mass)), 1e-12))
+    selected: set[int] = set()
+    corrected: list[tuple[int, int, int]] = []
+    corrections: list[float] = []
+    for color in result.palette:
+        target_lab = srgb_to_oklab(np.asarray(color, dtype=np.uint8)[None, :])[0]
+        distances = np.linalg.norm(candidate_lab - target_lab, axis=1)
+        scores = distances / frequency_factor
+        if selected and len(selected) < len(scores):
+            scores[np.fromiter(selected, dtype=np.int64)] = np.inf
+        winner = int(np.argmin(scores))
+        selected.add(winner)
+        corrected.append(as_rgb_tuple(candidates[winner]))
+        corrections.append(float(distances[winner] * 100.0))
+    palette = tuple(corrected)
+    return ExtractionResult(
+        method=method,
+        primary=palette[0],
+        palette=palette,
+        weights=result.weights,
+        confidence=result.confidence,
+        route=result.route + "_weighted_observed",
+        observed=True,
+        diagnostics={
+            **result.diagnostics,
+            "correction": "nearest observed Oklab color, distance divided by frequency factor",
+            "source_method": result.method,
+            "correction_delta_e_ok": corrections,
+            "output_semantics": "all output colors occur exactly in source pixels",
+        },
+    )
+
+
+def tencent_hsv_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, tencent_hsv_histogram(image, image_id), "tencent_hsv_observed")
+
+
+def pixelero_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, pixelero_rgb_histogram(image, image_id), "pixelero_rgb_hist_observed")
+
+
+def octree_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, octree_quantization(image, image_id), "octree_observed")
+
+
+def hsv_pixelero_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, hsv_bins_pixelero_kmeans(image, image_id), "hsv_pixelero_kmeans_observed")
+
+
+def pixelero_hsv_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, pixelero_bins_hsv_clustering(image, image_id), "pixelero_hsv_cluster_observed")
+
+
+def hsv_octree_weighted_observed(image: Image.Image, image_id: str = "") -> ExtractionResult:
+    return _map_palette_to_weighted_observed(image, hsv_bins_octree_quantization(image, image_id), "hsv_octree_observed")
+
+
 def _resize_like_colorpipette(image: Image.Image) -> Image.Image:
     width, height = image.size
     if min(width, height) <= 256:
@@ -597,7 +841,9 @@ def _harmonize_lch(colors_lab: np.ndarray) -> np.ndarray:
     return output
 
 
-def colorpipette_inspired(image: Image.Image, image_id: str = "", palette_size: int = 3) -> ExtractionResult:
+def colorpipette_inspired(
+    image: Image.Image, image_id: str = "", palette_size: int = DEFAULT_PALETTE_SIZE
+) -> ExtractionResult:
     """Scalable proxy of ColorPipette's segmentation/saliency/harmony stages.
 
     This is intentionally named "inspired": the original repository requires a
@@ -705,4 +951,13 @@ METHODS: dict[str, Callable[[Image.Image, str], ExtractionResult]] = {
     "octree": octree_quantization,
     "pngquant_liq": pngquant_libimagequant,
     "colorpipette_inspired": colorpipette_inspired,
+    "hsv_pixelero_kmeans": hsv_bins_pixelero_kmeans,
+    "pixelero_hsv_cluster": pixelero_bins_hsv_clustering,
+    "hsv_octree": hsv_bins_octree_quantization,
+    "tencent_hsv_observed": tencent_hsv_weighted_observed,
+    "pixelero_rgb_hist_observed": pixelero_weighted_observed,
+    "octree_observed": octree_weighted_observed,
+    "hsv_pixelero_kmeans_observed": hsv_pixelero_weighted_observed,
+    "pixelero_hsv_cluster_observed": pixelero_hsv_weighted_observed,
+    "hsv_octree_observed": hsv_octree_weighted_observed,
 }

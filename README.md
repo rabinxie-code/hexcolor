@@ -1,4 +1,112 @@
-# 100B crop HEX annotation feasibility lab
+# Top-5 crop HEX annotation lab
+
+> This working copy changes the shared palette budget from three colors to five
+> and includes a standalone visualization generated from the six synthetic
+> fixtures committed to the repository.
+
+Generate and build the standalone demo:
+
+```bash
+python scripts/generate_top5_demo.py
+npm run build
+```
+
+The original internal 10,000-crop images and checkpoints are not committed.
+The generated `site/` payload in this working copy contains only synthetic
+results, so the standalone page labels its results as
+synthetic reproduction data rather than reproducing the unavailable 10k metrics.
+
+## Accelerated multi-ROI top-5 extraction
+
+`hexbench/roi_batch.py` contains the production-oriented CPU path for extracting
+up to five colors from many boxes in one decoded image. Four method aliases are
+supported: `pixelero`, `hsv_pixelero`, `octree`, and `libimagequant` (recommended,
+using libimagequant speed 6).
+
+Common optimizations and output rules:
+
+- decode each source image once and process all of its boxes together;
+- preserve the source resolution (there is no whole-image resize);
+- stratified sampling capped at 2,048 pixels per box;
+- native Pillow FASTOCTREE or native libimagequant where applicable;
+- disable libimagequant dithering and PNG encoding because only colors are needed;
+- map centroids back to frequent colors that actually occur in the box using an
+  Oklab KD-tree;
+- discard clusters below 1% of the sampled box, so a result may contain fewer
+  than five colors;
+- use image-level multiprocessing and optional box-level threads. When many
+  processes are active, keep `--box-workers 1` to avoid oversubscription.
+
+Pixelero additionally shares its adaptive RGB channel centers across all boxes
+in an image. This is the only method-specific cross-box approximation. The
+other three methods share decode/sampling infrastructure but calculate each
+box palette independently.
+
+The CLI accepts pixel-coordinate `XYXY` boxes. Relative image paths are resolved
+against the manifest directory unless `--root` is supplied:
+
+```json
+{
+  "records": [
+    {
+      "path": "images/example.jpg",
+      "bboxes_xyxy": [[10, 20, 210, 180], [240, 40, 500, 400]]
+    }
+  ]
+}
+```
+
+```bash
+python scripts/extract_roi_palettes.py manifest.json \
+  --method libimagequant \
+  --processes 64 \
+  --box-workers 1 \
+  --output palettes.jsonl
+```
+
+For low-concurrency interactive use, `--box-workers 2` helps HSV→Pixelero,
+Octree, and libimagequant; Pixelero is normally best with one box thread.
+The Python API is:
+
+```python
+from hexbench.roi_batch import ROI_METHODS, process_image_with_boxes
+
+palettes, timing = process_image_with_boxes(
+    "example.jpg",
+    [(10, 20, 210, 180), (240, 40, 500, 400)],
+    ROI_METHODS["libimagequant"],
+    max_samples=2048,
+    min_cluster_ratio=0.01,
+    box_workers=2,
+)
+```
+
+On the real-box benchmark (300 cached 512×512 images, 3,461 boxes, 11.54
+boxes/image), the common 64-process configuration produced:
+
+| method | image P50 / P95 | coverage mean ↓ | images/s | boxes/s |
+|---|---:|---:|---:|---:|
+| Pixelero | 24.14 / 37.38 ms | **4.0512** | 1,482 | 17,101 |
+| HSV→Pixelero | 24.37 / 40.26 ms | 4.3986 | 1,557 | 17,962 |
+| Octree | 15.88 / **23.28 ms** | 4.6372 | 1,895 | 21,856 |
+| **libimagequant speed 6** | **15.70** / 23.41 ms | 4.0592 | **1,977** | **22,805** |
+
+Coverage is the mean distance from an evaluation pixel to its nearest palette
+color in Oklab, reported on a ×100 scale; lower is better. The benchmark uses
+up to 4,096 independent evaluation pixels per box. Throughput includes local
+file read/decode and palette extraction, but excludes remote object-store I/O.
+libimagequant deployments must also resolve its GPL/commercial licensing terms.
+
+To reproduce the latency, throughput, and coverage calculation on a compatible
+manifest, run:
+
+```bash
+python scripts/benchmark_real_bbox_300.py \
+  --manifest manifest.json \
+  --suite recommended \
+  --processes 64 \
+  --output roi-benchmark.json
+```
 
 这是一个可运行的 CPU gold/reference 实现与证据包，用于判断如何给约 100B 个 image crops 生成可解释的主色 HEX。项目实现七条统一基准、运行真实样本的质量/效率测试，并把 3 / 7 / 15 天容量判断发布为交互式报告。
 

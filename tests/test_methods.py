@@ -15,11 +15,21 @@ from hexbench.dataset import materialize_s3_crops
 from hexbench.methods import (
     adaptive_hex_v1,
     colorpipette_inspired,
+    hsv_bins_octree_quantization,
+    hsv_bins_pixelero_kmeans,
+    hsv_octree_weighted_observed,
+    hsv_pixelero_weighted_observed,
     octree_quantization,
+    octree_weighted_observed,
+    pixelero_bins_hsv_clustering,
+    pixelero_hsv_weighted_observed,
     pixelero_rgb_histogram,
+    pixelero_weighted_observed,
     pngquant_libimagequant,
     tencent_hsv_histogram,
+    tencent_hsv_weighted_observed,
 )
+from hexbench.roi_batch import _box_palette
 
 
 class ColorUtilityTests(unittest.TestCase):
@@ -51,6 +61,22 @@ class ColorUtilityTests(unittest.TestCase):
 
 
 class MethodTests(unittest.TestCase):
+    def test_roi_postprocess_drops_clusters_below_one_percent(self) -> None:
+        pixels = np.vstack((
+            np.repeat(np.array([[220, 30, 40]], dtype=np.uint8), 995, axis=0),
+            np.repeat(np.array([[20, 40, 220]], dtype=np.uint8), 5, axis=0),
+        ))
+        for method in (
+            "pixelero_observed_pruned",
+            "hsv_pixelero_observed_pruned",
+            "octree_observed_pruned",
+            "pngquant_liq_speed6_observed_pruned",
+        ):
+            with self.subTest(method=method):
+                result = _box_palette(pixels, method, 0.01)
+                self.assertEqual(result.palette, ((220, 30, 40),))
+                self.assertGreaterEqual(result.weights[0], 0.99)
+
     def test_manifest_sampling_uses_one_variant_per_source_and_exact_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -105,6 +131,51 @@ class MethodTests(unittest.TestCase):
         self.assertEqual(result.route, "gradient")
         self.assertGreaterEqual(len(result.palette), 3)
         self.assertTrue(result.observed)
+
+    def test_top_five_palette_budget(self) -> None:
+        rng = np.random.default_rng(20260802)
+        image = Image.fromarray(rng.integers(0, 256, size=(96, 96, 3), dtype=np.uint8))
+        for method in (
+            adaptive_hex_v1,
+            tencent_hsv_histogram,
+            pixelero_rgb_histogram,
+            octree_quantization,
+            pngquant_libimagequant,
+            colorpipette_inspired,
+        ):
+            with self.subTest(method=method.__name__):
+                palette = method(image, "top-five").palette
+                self.assertLessEqual(len(palette), 5)
+                self.assertGreaterEqual(len(palette), 1)
+        self.assertEqual(len(pixelero_rgb_histogram(image, "top-five").palette), 5)
+
+    def test_hybrids_return_top_five_and_corrected_colors_are_observed(self) -> None:
+        rng = np.random.default_rng(20260803)
+        pixels = rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+        image = Image.fromarray(pixels)
+        observed = {tuple(int(channel) for channel in color) for color in pixels.reshape(-1, 3)}
+        for method in (
+            hsv_bins_pixelero_kmeans,
+            pixelero_bins_hsv_clustering,
+            hsv_bins_octree_quantization,
+        ):
+            with self.subTest(hybrid=method.__name__):
+                result = method(image, "hybrid")
+                self.assertEqual(len(result.palette), 5)
+                self.assertFalse(result.observed)
+        for method in (
+            pixelero_weighted_observed,
+            octree_weighted_observed,
+            tencent_hsv_weighted_observed,
+            hsv_pixelero_weighted_observed,
+            pixelero_hsv_weighted_observed,
+            hsv_octree_weighted_observed,
+        ):
+            with self.subTest(corrected=method.__name__):
+                result = method(image, "corrected")
+                self.assertEqual(len(result.palette), 5)
+                self.assertTrue(result.observed)
+                self.assertTrue(all(color in observed for color in result.palette))
 
     def test_adaptive_ignores_fully_transparent_rgb(self) -> None:
         image = Image.new("RGBA", (128, 128), (255, 0, 255, 0))
