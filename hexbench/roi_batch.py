@@ -262,7 +262,7 @@ def _box_palette(
     else:
         raise ValueError(f"Unknown ROI method: {method}")
     if method == "octree_observed_pruned" or method.startswith("pngquant_liq_speed"):
-        order = np.argsort(bin_weights)[::-1]
+        order = np.argsort(-bin_weights, kind="stable")
         centroids, populations = bins[order], bin_weights[order]
     else:
         centroids, populations = _weighted_rgb_kmeans(bins, bin_weights, 5)
@@ -338,20 +338,20 @@ def _process_decoded_boxes(
     sampled = time.perf_counter_ns()
     native_palettes = None
     if method.startswith("pngquant_liq_speed") and method.endswith("_observed_pruned"):
-        from .liq_batch import quantize_many
+        from .liq_batch import quantize_many_observed
 
         speed_text = method.removeprefix("pngquant_liq_speed").removesuffix("_observed_pruned")
-        native_bins = quantize_many(samples, int(speed_text), box_workers)
-        if native_bins is not None:
-            native_palettes = []
-            for pixels, (centroids, populations) in zip(samples, native_bins):
-                order = np.argsort(populations)[::-1]
-                native_palettes.append(_weighted_observed_vectorized(
-                    pixels,
-                    centroids[order],
-                    populations[order],
-                    min_cluster_ratio,
-                ))
+        native_results = quantize_many_observed(
+            samples, int(speed_text), box_workers, min_cluster_ratio
+        )
+        if native_results is not None:
+            native_palettes = [
+                BoxPalette(
+                    palette=tuple(as_rgb_tuple(color) for color in palette),
+                    weights=tuple(float(weight) for weight in weights),
+                )
+                for palette, weights in native_results
+            ]
     if native_palettes is not None:
         palettes = native_palettes
     elif box_workers <= 1:

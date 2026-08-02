@@ -30,8 +30,8 @@ Common optimizations and output rules:
 - stratified sampling capped at 2,048 pixels per box;
 - native Pillow FASTOCTREE or native libimagequant where applicable;
 - disable libimagequant dithering and PNG encoding because only colors are needed;
-- map centroids back to frequent colors that actually occur in the box using a
-  vectorized Oklab distance matrix over the same nearest-64 candidate set;
+- map centroids back to frequent colors that actually occur in the box using
+  Oklab distance over the same nearest-64 candidate set;
 - discard clusters below 1% of the sampled box, so a result may contain fewer
   than five colors;
 - use image-level multiprocessing and optional box-level threads. When many
@@ -42,11 +42,18 @@ in an image. This is the only method-specific cross-box approximation. The
 other three methods share decode/sampling infrastructure but calculate each
 box palette independently.
 
-For libimagequant, an optional native batch adapter sends every sampled box in
-an image through one CFFI call, reuses one LIQ configuration and RGBA/index
-buffer per native worker, and dynamically calls the exact installed
-libimagequant 2.15.1 binary. The scalar fallback uses the same algorithm and is
-selected automatically when the extension is not built.
+For libimagequant, an optional fused native adapter sends every sampled box in
+an image through one CFFI call. The native call performs LIQ quantization and
+remapping, cluster population sorting, the 1% prune, unique observed-color
+counting, Oklab conversion, nearest-64 selection, frequency-weighted observed
+color recovery, and final palette/weight output. It reuses the LIQ attribute and
+all scratch buffers per native worker. Nearest-64 uses a fixed 64-entry max heap
+instead of sorting every observed color. The adapter dynamically calls the exact
+installed libimagequant 2.15.1 binary; it does not bundle another LIQ copy.
+
+If the extension is unavailable, the same pipeline runs through the scalar
+Python fallback. Set `box_workers=2` for low-concurrency latency tests; at high
+image-process concurrency, use `box_workers=1` to avoid CPU oversubscription.
 
 Build the native adapter after installing dependencies:
 
@@ -55,9 +62,11 @@ python scripts/build_liq_batch_native.py
 python -c "from hexbench.liq_batch import native_available; print(native_available())"
 ```
 
-`HEXBENCH_DISABLE_LIQ_BATCH=1` forces the scalar path for validation. On 300
-images, native and scalar LIQ centroids, cluster counts, final observed colors,
-weights, and coverage were all exactly equal.
+`HEXBENCH_DISABLE_LIQ_BATCH=1` forces the scalar path for validation. On the
+real-box test set, fused native and scalar output matched exactly for all 3,461
+boxes, including palette order and weights. Every returned color occurred in
+its source box, and coverage was unchanged. Equal-population clusters use an
+explicit stable order in both paths rather than NumPy's unstable default sort.
 
 The CLI accepts pixel-coordinate `XYXY` boxes. Relative image paths are resolved
 against the manifest directory unless `--root` is supplied:
@@ -105,12 +114,15 @@ boxes/image), the common 64-process configuration produced:
 |---|---:|---:|---:|---:|
 | Pixelero | 23.49 / 36.12 ms | **4.0512** | 1,506 | 17,372 |
 | HSV→Pixelero | 24.04 / 39.42 ms | 4.3986 | 1,416 | 16,335 |
-| Octree | 16.23 / 23.77 ms | 4.6372 | **2,089** | **24,100** |
-| **libimagequant speed 6** | **14.59 / 21.57 ms** | 4.0592 | 2,072 | 23,906 |
+| Octree | 16.23 / 23.77 ms | 4.6372 | 2,089 | 24,100 |
+| **libimagequant speed 6, fused** | **11.62 / 16.67 ms** | 4.0592 | **2,643** | **30,487** |
 
-Compared with the previous scalar/KD-tree LIQ path, the optimized LIQ path kept
-coverage at exactly 4.0592. Its palette stage improved from 8.97 to 7.72 ms P50,
-and the five-trial 64-process median improved from 1,977 to 2,072 images/s.
+Compared on the same machine with the scalar fallback, the fused LIQ path kept
+coverage at exactly 4.0592. The all-box palette stage improved from 8.35 to
+4.71 ms P50 (43.6%), total image latency from 15.49 to 11.62 ms P50 (25.0%),
+and the five-trial 64-process median from 2,150 to 2,643 images/s (22.9%). The
+benchmark used 300 cached 512×512 images and 3,461 real boxes. It is a CPU
+reference result, not a projection that includes object-store I/O.
 
 Coverage is the mean distance from an evaluation pixel to its nearest palette
 color in Oklab, reported on a ×100 scale; lower is better. The benchmark uses

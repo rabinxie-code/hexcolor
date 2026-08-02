@@ -29,8 +29,8 @@ from hexbench.methods import (
     tencent_hsv_histogram,
     tencent_hsv_weighted_observed,
 )
-from hexbench.liq_batch import native_available, quantize_many
-from hexbench.roi_batch import _box_palette, _libimagequant_bins
+from hexbench.liq_batch import native_available, quantize_many, quantize_many_observed
+from hexbench.roi_batch import _box_palette, _libimagequant_bins, _weighted_observed_vectorized
 
 
 class ColorUtilityTests(unittest.TestCase):
@@ -75,6 +75,24 @@ class MethodTests(unittest.TestCase):
         for (batch_colors, batch_counts), (scalar_colors, scalar_counts) in zip(batched or [], scalar):
             np.testing.assert_array_equal(batch_colors, scalar_colors)
             np.testing.assert_array_equal(batch_counts, scalar_counts)
+
+    @unittest.skipUnless(native_available(), "native LIQ batch extension is not built")
+    def test_native_liq_observed_batch_matches_scalar_pipeline(self) -> None:
+        rng = np.random.default_rng(20260805)
+        samples = [
+            rng.integers(0, 256, size=(length, 3), dtype=np.uint8)
+            for length in (257, 1024, 2048, 777)
+        ]
+        batched = quantize_many_observed(samples, speed=6, workers=2, min_cluster_ratio=0.01)
+        self.assertIsNotNone(batched)
+        for sample, (batch_colors, batch_weights) in zip(samples, batched or []):
+            colors, counts = _libimagequant_bins(sample, speed=6)
+            order = np.argsort(-counts, kind="stable")
+            scalar = _weighted_observed_vectorized(sample, colors[order], counts[order], 0.01)
+            np.testing.assert_array_equal(batch_colors, np.asarray(scalar.palette, dtype=np.uint8))
+            np.testing.assert_array_equal(batch_weights, np.asarray(scalar.weights, dtype=np.float64))
+            observed = {tuple(color) for color in sample.tolist()}
+            self.assertTrue(all(tuple(color) in observed for color in batch_colors.tolist()))
 
     def test_roi_postprocess_drops_clusters_below_one_percent(self) -> None:
         pixels = np.vstack((

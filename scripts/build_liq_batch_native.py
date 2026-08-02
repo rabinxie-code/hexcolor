@@ -21,13 +21,25 @@ ffi.cdef(
         uint64_t *counts,
         uint8_t *sizes
     );
+    int liq_quantize_many_observed(
+        const char *library_path,
+        const uint8_t *rgb,
+        const size_t *offsets,
+        size_t box_count,
+        int speed,
+        int workers,
+        double min_cluster_ratio,
+        uint8_t *palettes,
+        double *weights,
+        uint8_t *sizes
+    );
     """
 )
 ffi.set_source(
     "hexbench._liq_batch_native",
     '#include "liq_batch_native.c"',
     include_dirs=[str(ROOT / "hexbench")],
-    libraries=["dl", "pthread"],
+    libraries=["dl", "pthread", "m"],
     extra_compile_args=["-O3", "-std=c11"],
 )
 
