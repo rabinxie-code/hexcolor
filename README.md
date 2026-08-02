@@ -30,8 +30,8 @@ Common optimizations and output rules:
 - stratified sampling capped at 2,048 pixels per box;
 - native Pillow FASTOCTREE or native libimagequant where applicable;
 - disable libimagequant dithering and PNG encoding because only colors are needed;
-- map centroids back to frequent colors that actually occur in the box using an
-  Oklab KD-tree;
+- map centroids back to frequent colors that actually occur in the box using a
+  vectorized Oklab distance matrix over the same nearest-64 candidate set;
 - discard clusters below 1% of the sampled box, so a result may contain fewer
   than five colors;
 - use image-level multiprocessing and optional box-level threads. When many
@@ -41,6 +41,23 @@ Pixelero additionally shares its adaptive RGB channel centers across all boxes
 in an image. This is the only method-specific cross-box approximation. The
 other three methods share decode/sampling infrastructure but calculate each
 box palette independently.
+
+For libimagequant, an optional native batch adapter sends every sampled box in
+an image through one CFFI call, reuses one LIQ configuration and RGBA/index
+buffer per native worker, and dynamically calls the exact installed
+libimagequant 2.15.1 binary. The scalar fallback uses the same algorithm and is
+selected automatically when the extension is not built.
+
+Build the native adapter after installing dependencies:
+
+```bash
+python scripts/build_liq_batch_native.py
+python -c "from hexbench.liq_batch import native_available; print(native_available())"
+```
+
+`HEXBENCH_DISABLE_LIQ_BATCH=1` forces the scalar path for validation. On 300
+images, native and scalar LIQ centroids, cluster counts, final observed colors,
+weights, and coverage were all exactly equal.
 
 The CLI accepts pixel-coordinate `XYXY` boxes. Relative image paths are resolved
 against the manifest directory unless `--root` is supplied:
@@ -86,10 +103,14 @@ boxes/image), the common 64-process configuration produced:
 
 | method | image P50 / P95 | coverage mean ↓ | images/s | boxes/s |
 |---|---:|---:|---:|---:|
-| Pixelero | 24.14 / 37.38 ms | **4.0512** | 1,482 | 17,101 |
-| HSV→Pixelero | 24.37 / 40.26 ms | 4.3986 | 1,557 | 17,962 |
-| Octree | 15.88 / **23.28 ms** | 4.6372 | 1,895 | 21,856 |
-| **libimagequant speed 6** | **15.70** / 23.41 ms | 4.0592 | **1,977** | **22,805** |
+| Pixelero | 23.49 / 36.12 ms | **4.0512** | 1,506 | 17,372 |
+| HSV→Pixelero | 24.04 / 39.42 ms | 4.3986 | 1,416 | 16,335 |
+| Octree | 16.23 / 23.77 ms | 4.6372 | **2,089** | **24,100** |
+| **libimagequant speed 6** | **14.59 / 21.57 ms** | 4.0592 | 2,072 | 23,906 |
+
+Compared with the previous scalar/KD-tree LIQ path, the optimized LIQ path kept
+coverage at exactly 4.0592. Its palette stage improved from 8.97 to 7.72 ms P50,
+and the five-trial 64-process median improved from 1,977 to 2,072 images/s.
 
 Coverage is the mean distance from an evaluation pixel to its nearest palette
 color in Oklab, reported on a ×100 scale; lower is better. The benchmark uses

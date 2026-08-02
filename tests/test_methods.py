@@ -29,7 +29,8 @@ from hexbench.methods import (
     tencent_hsv_histogram,
     tencent_hsv_weighted_observed,
 )
-from hexbench.roi_batch import _box_palette
+from hexbench.liq_batch import native_available, quantize_many
+from hexbench.roi_batch import _box_palette, _libimagequant_bins
 
 
 class ColorUtilityTests(unittest.TestCase):
@@ -61,6 +62,20 @@ class ColorUtilityTests(unittest.TestCase):
 
 
 class MethodTests(unittest.TestCase):
+    @unittest.skipUnless(native_available(), "native LIQ batch extension is not built")
+    def test_native_liq_batch_matches_scalar_palette_and_counts(self) -> None:
+        rng = np.random.default_rng(20260804)
+        samples = [
+            rng.integers(0, 256, size=(length, 3), dtype=np.uint8)
+            for length in (257, 1024, 2048, 777)
+        ]
+        batched = quantize_many(samples, speed=6, workers=2)
+        self.assertIsNotNone(batched)
+        scalar = [_libimagequant_bins(sample, speed=6) for sample in samples]
+        for (batch_colors, batch_counts), (scalar_colors, scalar_counts) in zip(batched or [], scalar):
+            np.testing.assert_array_equal(batch_colors, scalar_colors)
+            np.testing.assert_array_equal(batch_counts, scalar_counts)
+
     def test_roi_postprocess_drops_clusters_below_one_percent(self) -> None:
         pixels = np.vstack((
             np.repeat(np.array([[220, 30, 40]], dtype=np.uint8), 995, axis=0),

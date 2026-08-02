@@ -32,6 +32,7 @@ LIQ_METHODS = (
     "pngquant_liq_speed10_observed_pruned",
 )
 RECOMMENDED_METHODS = METHODS + ("pngquant_liq_speed6_observed_pruned",)
+LIQ6_METHODS = ("pngquant_liq_speed6_observed_pruned",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,7 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--processes", type=int, default=64)
     parser.add_argument("--throughput-repeats", type=int, default=4)
     parser.add_argument("--throughput-trials", type=int, default=5)
-    parser.add_argument("--suite", choices=("recommended", "base", "libimagequant"), default="recommended")
+    parser.add_argument(
+        "--suite",
+        choices=("recommended", "base", "libimagequant", "libimagequant6"),
+        default="recommended",
+    )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -151,6 +156,7 @@ def main() -> None:
         "recommended": RECOMMENDED_METHODS,
         "base": METHODS,
         "libimagequant": LIQ_METHODS,
+        "libimagequant6": LIQ6_METHODS,
     }[args.suite]
     results = [benchmark(records, args.manifest.parent, method, args) for method in methods]
     payload = {

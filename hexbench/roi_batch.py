@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.spatial import cKDTree
 
 from .color import as_rgb_tuple, pack_rgb24, srgb_to_oklab, unpack_rgb24
 from .images import open_image_srgb
@@ -81,7 +80,7 @@ def _stratified_box_pixels(rgb: np.ndarray, box: Box, max_samples: int) -> np.nd
     return np.ascontiguousarray(rgb[ys[:, None], xs[None, :]].reshape(-1, 3))
 
 
-def _weighted_observed_kdtree(
+def _weighted_observed_vectorized(
     pixels: np.ndarray,
     centroids: np.ndarray,
     populations: np.ndarray,
@@ -98,15 +97,21 @@ def _weighted_observed_kdtree(
     unique, counts = np.unique(packed, return_counts=True)
     candidates = unpack_rgb24(unique)
     candidate_lab = srgb_to_oklab(candidates)
-    tree = cKDTree(candidate_lab, compact_nodes=True, balanced_tree=True)
     target_lab = srgb_to_oklab(np.clip(np.rint(targets), 0, 255).astype(np.uint8))
     neighbor_count = min(64, len(candidates))
-    distances, indexes = tree.query(target_lab, k=neighbor_count, workers=1)
-    distances = np.atleast_2d(distances)
-    indexes = np.atleast_2d(indexes)
-    if len(keep) == 1:
-        distances = distances.reshape(1, -1)
-        indexes = indexes.reshape(1, -1)
+    all_distances = np.linalg.norm(
+        target_lab[:, None, :] - candidate_lab[None, :, :], axis=2
+    )
+    if neighbor_count < len(candidates):
+        indexes = np.argpartition(
+            all_distances, neighbor_count - 1, axis=1
+        )[:, :neighbor_count]
+    else:
+        indexes = np.broadcast_to(
+            np.arange(len(candidates), dtype=np.int64),
+            (len(targets), len(candidates)),
+        )
+    distances = np.take_along_axis(all_distances, indexes, axis=1)
 
     selected: set[int] = set()
     palette: list[tuple[int, int, int]] = []
@@ -261,7 +266,7 @@ def _box_palette(
         centroids, populations = bins[order], bin_weights[order]
     else:
         centroids, populations = _weighted_rgb_kmeans(bins, bin_weights, 5)
-    return _weighted_observed_kdtree(pixels, centroids, populations, min_cluster_ratio)
+    return _weighted_observed_vectorized(pixels, centroids, populations, min_cluster_ratio)
 
 
 def process_image_boxes(
@@ -331,7 +336,25 @@ def _process_decoded_boxes(
             for channel in range(3)
         )
     sampled = time.perf_counter_ns()
-    if box_workers <= 1:
+    native_palettes = None
+    if method.startswith("pngquant_liq_speed") and method.endswith("_observed_pruned"):
+        from .liq_batch import quantize_many
+
+        speed_text = method.removeprefix("pngquant_liq_speed").removesuffix("_observed_pruned")
+        native_bins = quantize_many(samples, int(speed_text), box_workers)
+        if native_bins is not None:
+            native_palettes = []
+            for pixels, (centroids, populations) in zip(samples, native_bins):
+                order = np.argsort(populations)[::-1]
+                native_palettes.append(_weighted_observed_vectorized(
+                    pixels,
+                    centroids[order],
+                    populations[order],
+                    min_cluster_ratio,
+                ))
+    if native_palettes is not None:
+        palettes = native_palettes
+    elif box_workers <= 1:
         palettes = [_box_palette(pixels, method, min_cluster_ratio, shared_centers) for pixels in samples]
     else:
         with ThreadPoolExecutor(max_workers=box_workers) as executor:
