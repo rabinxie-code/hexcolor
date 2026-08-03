@@ -12,6 +12,13 @@ dependencies = [
   "setuptools>=68",
 ]
 
+[project.optional-dependencies]
+gpu = [
+  "torch>=2.7",
+  "triton>=3.3",
+  "nvidia-nvimgcodec-cu12>=0.9",
+]
+
 [tool.ruff]
 line-length = 120
 

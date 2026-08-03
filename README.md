@@ -141,6 +141,54 @@ python scripts/benchmark_real_bbox_300.py \
   --output roi-benchmark.json
 ```
 
+## Experimental GPU superbatch path
+
+`hexbench/gpu_roi.py` is an H200-tested GPU-native alternative, not a GPU port
+of libimagequant. It runs deterministic Oklab 5-means and maps each center to an
+RGB color sampled from the box. Output remains limited to five observed colors,
+with stable population ordering and a 1% cluster cutoff.
+
+Triton kernels perform stratified bbox sampling, sRGB-to-Oklab conversion,
+cluster assignment/reduction, and observed-pixel recovery. Sampling metadata is
+retained on the GPU. Images are not resized. Decode batches must currently have
+equal image dimensions; production should bucket by shape.
+
+```bash
+pip install -e '.[gpu]'
+CUDA_VISIBLE_DEVICES=0 python scripts/benchmark_gpu_real_bbox_300.py \
+  --manifest manifest.json --iterations 24
+CUDA_VISIBLE_DEVICES=0 python scripts/benchmark_gpu_decode_real_bbox_300.py \
+  --manifest manifest.json --iterations 24 --trials 10
+```
+
+On one H200 with 300 warm local-cache 512×512 WebP files and 3,461 real boxes:
+
+| pipeline | batch | batch P50 | amortized P50 | images/s | coverage mean ↓ |
+|---|---:|---:|---:|---:|---:|
+| CPU fused libimagequant | multi-process | — | 11.62 ms latency | 2,643 | 4.0592 |
+| Triton palette, CPU-prepared samples | 300 | 27.95 ms | 0.093 ms/image | — | 4.0015 |
+| nvImageCodec WebP → Triton | 8 | 22.42 ms | 2.80 ms/image | 357 | 3.4215¹ |
+| **nvImageCodec WebP → Triton** | **300** | **73.52 ms** | **0.245 ms/image** | **4,080** | **4.0016** |
+
+¹ Batch-8 coverage covers only the first eight images and is not statistically
+comparable with the 300-image result.
+
+For batch 300, a synchronized pass used 38.79 ms for WebP read/decode to CUDA,
+2.00 ms to stack CUDA images, 0.285 ms for bbox sampling, and 27.13 ms for
+palette extraction plus small CPU output. nvImageCodec and Pillow decoded all
+78,643,200 tested pixels identically; every output palette used only colors from
+its corresponding source box.
+
+Limitations:
+
+- WebP uses a CPU codec fallback inside nvImageCodec before CUDA exposure. JPEG
+  can use nvJPEG-capable hardware backends;
+- nvImageCodec 0.9.0 repeatedly decoding one WebP, or changing batch size in one
+  decoder process, hung in an internal futex here. Fixed batches of 8 and 300
+  were stable; isolate batch sizes by process;
+- timings use warm local files and exclude S3 latency and result persistence;
+- coverage does not replace human visual review.
+
 这是一个可运行的 CPU gold/reference 实现与证据包，用于判断如何给约 100B 个 image crops 生成可解释的主色 HEX。项目实现七条统一基准、运行真实样本的质量/效率测试，并把 3 / 7 / 15 天容量判断发布为交互式报告。
 
 ## 结论
@@ -240,6 +288,9 @@ conda run -n cg python scripts/audit_colorpipette_original.py --repo /tmp/hex-co
 - `scripts/benchmark_colorthief.mjs`：官方 Color Thief v3 的 Sharp decode + OKLCH/MMCQ 精确运行适配。
 - `hexbench/batch.py`、`scripts/extract_hex.py`：单图/目录批量标注 API 与 CLI。
 - `hexbench/benchmark.py`：端到端计时、稳定性、coverage、scale projection。
+- `hexbench/gpu_roi.py`：实验性 Triton bbox sampling、Oklab 5-means 和 observed-color recovery。
+- `scripts/benchmark_gpu_real_bbox_300.py`：CPU-prepared samples 的 GPU palette 基准。
+- `scripts/benchmark_gpu_decode_real_bbox_300.py`：nvImageCodec WebP→CUDA 的固定 batch 端到端基准。
 - `hexbench/browser_export.py`：把 10k checkpoint 导出为轻量索引、逐 crop 七方法明细和按需加载图片。
 - `scripts/audit_colorpipette_original.py`：明确限定为单图的上游原版审计。
 - `src/`：六页 React 证据报告；`design/` 保存设计规范与 fidelity ledger。
