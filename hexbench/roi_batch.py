@@ -212,13 +212,42 @@ def _libimagequant_indexed(
             ffi.release(remapped)
 
 
-def _libimagequant_bins(pixels: np.ndarray, speed: int) -> tuple[np.ndarray, np.ndarray]:
+def _libimagequant_bins(
+    pixels: np.ndarray, speed: int, max_colors: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
     """Run libimagequant on a sample and return palette mass."""
 
-    indexed, colors = _libimagequant_indexed(pixels, len(pixels), 1, 5, speed)
+    indexed, colors = _libimagequant_indexed(
+        pixels, len(pixels), 1, max_colors, speed
+    )
     counts = np.bincount(indexed.reshape(-1), minlength=len(colors)).astype(np.float64)
     occupied = np.flatnonzero(counts > 0)
     return colors[occupied], counts[occupied]
+
+
+def libimagequant_observed_palette(
+    pixels: np.ndarray,
+    *,
+    palette_size: int = 5,
+    speed: int = 6,
+    min_cluster_ratio: float = 0.01,
+) -> BoxPalette:
+    """CPU reference palette used for GPU/CPU agreement benchmarks."""
+    pixels = np.ascontiguousarray(pixels, dtype=np.uint8).reshape(-1, 3)
+    if len(pixels) == 0:
+        raise ValueError("pixels must not be empty")
+    if not 1 <= palette_size <= 256:
+        raise ValueError("palette_size must be between 1 and 256")
+    bins, populations = _libimagequant_bins(
+        pixels, speed, max_colors=palette_size
+    )
+    order = np.argsort(-populations, kind="stable")
+    return _weighted_observed_vectorized(
+        pixels,
+        bins[order],
+        populations[order],
+        min_cluster_ratio,
+    )
 
 
 def _box_palette(

@@ -141,53 +141,103 @@ python scripts/benchmark_real_bbox_300.py \
   --output roi-benchmark.json
 ```
 
-## Experimental GPU superbatch path
+## GPU 2.0: LIQ-like superbatch path
 
-`hexbench/gpu_roi.py` is an H200-tested GPU-native alternative, not a GPU port
-of libimagequant. It runs deterministic Oklab 5-means and maps each center to an
-RGB color sampled from the box. Output remains limited to five observed colors,
-with stable population ordering and a 1% cluster cutoff.
+`hexbench/gpu_roi.py` contains the H200-tested GPU 2.0 path. Its goal is to keep
+the output semantics of the validated CPU libimagequant pipeline while batching
+all bboxes from many images on one GPU. It is an independent PyTorch/Triton
+implementation, not libimagequant running on CUDA and not a bit-exact port.
 
-Triton kernels perform stratified bbox sampling, sRGB-to-Oklab conversion,
-cluster assignment/reduction, and observed-pixel recovery. Sampling metadata is
-retained on the GPU. Images are not resized. Decode batches must currently have
-equal image dimensions; production should bucket by shape.
+For each bbox, GPU 2.0 performs:
+
+1. deterministic stratified sampling, capped at 2,048 pixels by default;
+2. exact RGB deduplication and frequency counting on the GPU;
+3. libimagequant-style gamma-space conversion and capped perceptual weights;
+4. deterministic weighted median-cut initialization;
+5. eight weighted k-means refinement iterations;
+6. palette rounding to 8-bit, followed by remapping and stable population sort;
+7. 1% population pruning, so the result can contain fewer than five colors;
+8. frequency-weighted nearest observed-color recovery in Oklab, considering the
+   nearest 64 exact RGB candidates and preventing duplicate palette entries.
+
+The whole source image is never resized. Each image is decoded once, while its
+bboxes are sampled independently. Every returned RGB value occurs in the sampled
+bbox. Decode batches currently require equal image dimensions, so production
+should bucket inputs by shape. The old Oklab k-means path remains available with
+`--pipeline oklab`; benchmark CLIs now default to `--pipeline liq_like`.
+
+Python API:
+
+```python
+import numpy as np
+from hexbench.gpu_roi import gpu_liq_like_observed
+
+# samples: uint8 [bbox, 2048, 3], padded per bbox
+# lengths: int32 [bbox], number of valid samples in each row
+result = gpu_liq_like_observed(
+    samples,
+    lengths,
+    palette_size=5,
+    iterations=8,
+    min_cluster_ratio=0.01,
+    exact_median_cut=True,
+    rounded_remap=True,
+)
+print(result.palettes[0], result.weights[0])
+```
+
+Install and reproduce the three benchmark views:
 
 ```bash
 pip install -e '.[gpu]'
+
+# GPU palette kernel with CPU-prepared bbox samples
 CUDA_VISIBLE_DEVICES=0 python scripts/benchmark_gpu_real_bbox_300.py \
-  --manifest manifest.json --iterations 24
+  --manifest manifest.json --pipeline liq_like --palette-size 5 --iterations 8
+
+# Decode + sampling + palette end to end
 CUDA_VISIBLE_DEVICES=0 python scripts/benchmark_gpu_decode_real_bbox_300.py \
-  --manifest manifest.json --iterations 24 --trials 10
+  --manifest manifest.json --pipeline liq_like --palette-size 5 \
+  --iterations 8 --trials 10
+
+# CPU libimagequant GT agreement, coverage, and 5/16-color comparison
+CUDA_VISIBLE_DEVICES=0 python scripts/benchmark_gpu_cpu_gt_real_bbox_300.py \
+  --manifest manifest.json --pipeline liq_like --iterations 8
 ```
 
-On one H200 with 300 warm local-cache 512×512 WebP files and 3,461 real boxes:
+### H200 results
 
-| pipeline | batch | batch P50 | amortized P50 | images/s | coverage mean ↓ |
-|---|---:|---:|---:|---:|---:|
-| CPU fused libimagequant | multi-process | — | 11.62 ms latency | 2,643 | 4.0592 |
-| Triton palette, CPU-prepared samples | 300 | 27.95 ms | 0.093 ms/image | — | 4.0015 |
-| nvImageCodec WebP → Triton | 8 | 22.42 ms | 2.80 ms/image | 357 | 3.4215¹ |
-| **nvImageCodec WebP → Triton** | **300** | **73.52 ms** | **0.245 ms/image** | **4,080** | **4.0016** |
+The benchmark used 300 warm local-cache 512×512 WebP images, 3,461 real bboxes
+(11.54 bboxes/image), 2,048 palette samples per bbox, and up to 4,096 independent
+coverage samples. Oklab distances use the ×100 display scale and lower is better.
 
-¹ Batch-8 coverage covers only the first eight images and is not statistically
-comparable with the 300-image result.
+| colors | full pipeline P50 | images/s | palette core / 300 images | coverage mean ↓ | CPU→GPU weighted ΔE mean / P50 / P95 ↓ |
+|---:|---:|---:|---:|---:|---:|
+| **5** | **0.292 ms/image** | **3,430** | 42.8 ms | 4.0816 | 1.2980 / 0.7398 / 4.1791 |
+| 16 | 0.689 ms/image | 1,452 | 161.9 ms | **2.1834** | **1.1932 / 1.1412 / 2.1845** |
 
-For batch 300, a synchronized pass used 38.79 ms for WebP read/decode to CUDA,
-2.00 ms to stack CUDA images, 0.285 ms for bbox sampling, and 27.13 ms for
-palette extraction plus small CPU output. nvImageCodec and Pillow decoded all
-78,643,200 tested pixels identically; every output palette used only colors from
-its corresponding source box.
+The CPU libimagequant reference coverage was 4.0592 for five colors and 2.1396
+for sixteen. Five-color symmetric weighted CPU/GPU ΔE was 1.2807. Rounding the
+palette to 8-bit and remapping added no measurable cost in the five-color test;
+for sixteen colors the palette core changed from 161.80 to 161.95 ms P50
+(about 0.09%), with unchanged coverage at the reported precision.
 
-Limitations:
+The end-to-end pass includes local WebP read/decode, CUDA image exposure,
+stacking, bbox sampling, palette extraction, and the small CPU output conversion.
+WebP used a CPU codec fallback inside nvImageCodec on this machine, accounting
+for about 41.5 ms per 300-image pass; JPEG can use nvJPEG-capable backends.
 
-- WebP uses a CPU codec fallback inside nvImageCodec before CUDA exposure. JPEG
-  can use nvJPEG-capable hardware backends;
-- nvImageCodec 0.9.0 repeatedly decoding one WebP, or changing batch size in one
-  decoder process, hung in an internal futex here. Fixed batches of 8 and 300
-  were stable; isolate batch sizes by process;
-- timings use warm local files and exclude S3 latency and result persistence;
-- coverage does not replace human visual review.
+Important benchmark boundaries:
+
+- results use one H200, warm local files, and one large 300-image superbatch;
+- S3 latency, scheduling, retries, and result persistence are excluded;
+- CPU and GPU throughput rows have different batching/concurrency shapes, so
+  use them as deployment measurements rather than single-request latency ratios;
+- nvImageCodec 0.9.0 was stable with fixed batch sizes here, but changing batch
+  size in one long-lived decoder process previously caused an internal futex hang;
+- coverage rewards pixel coverage and does not replace human visual review;
+- libimagequant remains the quality reference and requires GPL/commercial
+  licensing review if it is deployed directly.
 
 这是一个可运行的 CPU gold/reference 实现与证据包，用于判断如何给约 100B 个 image crops 生成可解释的主色 HEX。项目实现七条统一基准、运行真实样本的质量/效率测试，并把 3 / 7 / 15 天容量判断发布为交互式报告。
 
@@ -288,9 +338,10 @@ conda run -n cg python scripts/audit_colorpipette_original.py --repo /tmp/hex-co
 - `scripts/benchmark_colorthief.mjs`：官方 Color Thief v3 的 Sharp decode + OKLCH/MMCQ 精确运行适配。
 - `hexbench/batch.py`、`scripts/extract_hex.py`：单图/目录批量标注 API 与 CLI。
 - `hexbench/benchmark.py`：端到端计时、稳定性、coverage、scale projection。
-- `hexbench/gpu_roi.py`：实验性 Triton bbox sampling、Oklab 5-means 和 observed-color recovery。
-- `scripts/benchmark_gpu_real_bbox_300.py`：CPU-prepared samples 的 GPU palette 基准。
+- `hexbench/gpu_roi.py`：GPU 2.0 的 bbox sampling、LIQ-like median-cut / weighted k-means、8-bit remap 和 observed-color recovery；同时保留旧 Oklab K-means 对照。
+- `scripts/benchmark_gpu_real_bbox_300.py`：CPU-prepared samples 的 GPU palette 核心基准，默认运行 GPU 2.0。
 - `scripts/benchmark_gpu_decode_real_bbox_300.py`：nvImageCodec WebP→CUDA 的固定 batch 端到端基准。
+- `scripts/benchmark_gpu_cpu_gt_real_bbox_300.py`：5/16 色 GPU 2.0 与 CPU libimagequant GT 的 coverage 和加权 ΔE 对照。
 - `hexbench/browser_export.py`：把 10k checkpoint 导出为轻量索引、逐 crop 七方法明细和按需加载图片。
 - `scripts/audit_colorpipette_original.py`：明确限定为单图的上游原版审计。
 - `src/`：六页 React 证据报告；`design/` 保存设计规范与 fidelity ledger。

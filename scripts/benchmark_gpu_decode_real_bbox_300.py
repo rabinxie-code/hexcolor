@@ -17,6 +17,7 @@ from hexbench.color import palette_coverage
 from hexbench.gpu_roi import (
     build_stratified_box_metadata,
     gpu_kmeans_observed_device,
+    gpu_liq_like_observed_device,
     gpu_stratified_box_samples_from_metadata,
 )
 from hexbench.images import open_image_srgb
@@ -48,18 +49,34 @@ def decode_paths(decoder, paths):
     return decoded
 
 
-def run_pipeline(decoder, paths, gpu_metadata, iterations):
+def run_pipeline(
+    decoder, paths, gpu_metadata, iterations, observed_correction,
+    palette_size, kmeans_restarts, pipeline,
+):
     decoded = decode_paths(decoder, paths)
     images = torch.stack([torch.as_tensor(image) for image in decoded])
     samples, lengths = gpu_stratified_box_samples_from_metadata(images, gpu_metadata)
-    result = gpu_kmeans_observed_device(samples, lengths, iterations=iterations)
+    if pipeline == "liq_like":
+        result = gpu_liq_like_observed_device(
+            samples, lengths, iterations=iterations, palette_size=palette_size
+        )
+    else:
+        result = gpu_kmeans_observed_device(
+            samples, lengths, iterations=iterations,
+            observed_correction=observed_correction,
+            palette_size=palette_size, kmeans_restarts=kmeans_restarts,
+        )
     return result, images
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, default=ROOT / "data/real_bbox_300/manifest.json")
-    parser.add_argument("--iterations", type=int, default=24)
+    parser.add_argument("--iterations", type=int, default=8)
+    parser.add_argument("--pipeline", choices=("oklab", "liq_like"), default="liq_like")
+    parser.add_argument("--observed-correction", choices=("nearest", "frequency_weighted"), default="frequency_weighted")
+    parser.add_argument("--palette-size", type=int, default=5)
+    parser.add_argument("--kmeans-restarts", type=int, default=2)
     parser.add_argument("--trials", type=int, default=10)
     parser.add_argument("--coverage-samples", type=int, default=4096)
     parser.add_argument("--cuda-streams", type=int, default=4)
@@ -81,14 +98,20 @@ def main() -> None:
     decoder = nvimgcodec.Decoder(options=f":num_cuda_streams={args.cuda_streams}")
     gpu_metadata = build_stratified_box_metadata(image_indexes, boxes)
 
-    run_pipeline(decoder, paths, gpu_metadata, args.iterations)
+    run_pipeline(
+        decoder, paths, gpu_metadata, args.iterations, args.observed_correction,
+        args.palette_size, args.kmeans_restarts, args.pipeline,
+    )
     torch.cuda.synchronize()
     full_times: list[float] = []
     result = None
     images = None
     for _ in range(args.trials):
         before = time.perf_counter()
-        (result, images) = run_pipeline(decoder, paths, gpu_metadata, args.iterations)
+        (result, images) = run_pipeline(
+            decoder, paths, gpu_metadata, args.iterations, args.observed_correction,
+            args.palette_size, args.kmeans_restarts, args.pipeline,
+        )
         torch.cuda.synchronize()
         full_times.append((time.perf_counter() - before) * 1000.0)
     assert result is not None and images is not None
@@ -100,7 +123,19 @@ def main() -> None:
         lambda: gpu_stratified_box_samples_from_metadata(images, gpu_metadata)
     )
     _, palette_ms = synchronize_ms(
-        lambda: gpu_kmeans_observed_device(samples, lengths, iterations=args.iterations)
+        lambda: (
+            gpu_liq_like_observed_device(
+                samples, lengths, iterations=args.iterations,
+                palette_size=args.palette_size,
+            )
+            if args.pipeline == "liq_like"
+            else gpu_kmeans_observed_device(
+                samples, lengths, iterations=args.iterations,
+                observed_correction=args.observed_correction,
+                palette_size=args.palette_size,
+                kmeans_restarts=args.kmeans_restarts,
+            )
+        )
     )
 
     decoded_cpu = images.cpu().numpy()
@@ -136,11 +171,21 @@ def main() -> None:
 
     total_pixels = len(records) * int(records[0]["width"]) * int(records[0]["height"])
     payload = {
-        "method": "nvimagecodec_webp_to_triton_oklab_kmeans5_observed_pruned",
+        "method": (
+            f"nvimagecodec_webp_to_gpu_liq_like{args.palette_size}_observed_pruned"
+            if args.pipeline == "liq_like"
+            else f"nvimagecodec_webp_to_triton_oklab_kmeans{args.palette_size}_r{args.kmeans_restarts}_{args.observed_correction}_observed_pruned"
+        ),
         "gpu": torch.cuda.get_device_name(0),
         "images": len(records),
         "boxes": len(boxes),
         "iterations": args.iterations,
+        "pipeline": args.pipeline,
+        "observed_correction": args.observed_correction,
+        "palette_size": args.palette_size,
+        "kmeans_restarts": (
+            None if args.pipeline == "liq_like" else args.kmeans_restarts
+        ),
         "cuda_streams": args.cuda_streams,
         "full_pipeline_superbatch_ms": pct(full_times),
         "full_pipeline_amortized_ms_per_image_p50": round(float(np.median(full_times)) / len(records), 4),

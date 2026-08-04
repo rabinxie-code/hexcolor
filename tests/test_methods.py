@@ -30,7 +30,12 @@ from hexbench.methods import (
     tencent_hsv_weighted_observed,
 )
 from hexbench.liq_batch import native_available, quantize_many, quantize_many_observed
-from hexbench.roi_batch import _box_palette, _libimagequant_bins, _weighted_observed_vectorized
+from hexbench.roi_batch import (
+    _box_palette,
+    _libimagequant_bins,
+    _weighted_observed_vectorized,
+    libimagequant_observed_palette,
+)
 
 
 class ColorUtilityTests(unittest.TestCase):
@@ -62,6 +67,19 @@ class ColorUtilityTests(unittest.TestCase):
 
 
 class MethodTests(unittest.TestCase):
+    def test_scalar_liq_reference_supports_five_and_sixteen_colors(self) -> None:
+        rng = np.random.default_rng(20260806)
+        pixels = rng.integers(0, 256, size=(2048, 3), dtype=np.uint8)
+        observed = {tuple(color) for color in pixels.tolist()}
+        for palette_size in (5, 16):
+            with self.subTest(palette_size=palette_size):
+                result = libimagequant_observed_palette(
+                    pixels, palette_size=palette_size
+                )
+                self.assertLessEqual(len(result.palette), palette_size)
+                self.assertEqual(len(result.palette), len(result.weights))
+                self.assertTrue(all(color in observed for color in result.palette))
+
     @unittest.skipUnless(native_available(), "native LIQ batch extension is not built")
     def test_native_liq_batch_matches_scalar_palette_and_counts(self) -> None:
         rng = np.random.default_rng(20260804)

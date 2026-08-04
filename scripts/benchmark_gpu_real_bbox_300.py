@@ -14,7 +14,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hexbench.color import palette_coverage
-from hexbench.gpu_roi import gpu_kmeans_observed
+from hexbench.gpu_roi import gpu_kmeans_observed, gpu_liq_like_observed
 from hexbench.images import open_image_srgb
 from hexbench.roi_batch import _stratified_box_pixels
 
@@ -52,7 +52,11 @@ def main():
     parser.add_argument("--decode-workers", type=int, default=32)
     parser.add_argument("--process-workers", type=int, default=64)
     parser.add_argument("--prepare-trials", type=int, default=5)
-    parser.add_argument("--iterations", type=int, default=24)
+    parser.add_argument("--iterations", type=int, default=8)
+    parser.add_argument("--pipeline", choices=("oklab", "liq_like"), default="liq_like")
+    parser.add_argument("--observed-correction", choices=("nearest", "frequency_weighted"), default="frequency_weighted")
+    parser.add_argument("--palette-size", type=int, default=5)
+    parser.add_argument("--kmeans-restarts", type=int, default=2)
     parser.add_argument("--trials", type=int, default=10)
     parser.add_argument("--output", type=Path, default=ROOT / "data/real_bbox_300_gpu_benchmark.json")
     args = parser.parse_args()
@@ -71,13 +75,23 @@ def main():
             preparation_times.append((time.perf_counter() - before) * 1000)
     assert chunks is not None
     box_count = len(lengths)
-    gpu_kmeans_observed(padded, lengths, iterations=args.iterations)
+    palette_kwargs = {
+        "iterations": args.iterations,
+        "observed_correction": args.observed_correction,
+        "palette_size": args.palette_size,
+        "kmeans_restarts": args.kmeans_restarts,
+    }
+    run_palette = gpu_liq_like_observed if args.pipeline == "liq_like" else gpu_kmeans_observed
+    if args.pipeline == "liq_like":
+        palette_kwargs.pop("observed_correction")
+        palette_kwargs.pop("kmeans_restarts")
+    run_palette(padded, lengths, **palette_kwargs)
     torch.cuda.synchronize()
     times = []
     result = None
     for _ in range(args.trials):
         before = time.perf_counter()
-        result = gpu_kmeans_observed(padded, lengths, iterations=args.iterations)
+        result = run_palette(padded, lengths, **palette_kwargs)
         torch.cuda.synchronize()
         times.append((time.perf_counter() - before) * 1000)
     median_gpu = float(np.median(times))
@@ -87,12 +101,12 @@ def main():
     batch_scaling = []
     for image_count in (1, 8, 32, 128):
         subset_boxes = int(cumulative_boxes[image_count - 1])
-        gpu_kmeans_observed(padded[:subset_boxes], lengths[:subset_boxes], iterations=args.iterations)
+        run_palette(padded[:subset_boxes], lengths[:subset_boxes], **palette_kwargs)
         torch.cuda.synchronize()
         scaling_times = []
         for _ in range(10):
             before = time.perf_counter()
-            gpu_kmeans_observed(padded[:subset_boxes], lengths[:subset_boxes], iterations=args.iterations)
+            run_palette(padded[:subset_boxes], lengths[:subset_boxes], **palette_kwargs)
             torch.cuda.synchronize()
             scaling_times.append((time.perf_counter() - before) * 1000)
         batch_p50 = float(np.median(scaling_times))
@@ -119,8 +133,18 @@ def main():
     sequential_ms = median_preparation + median_gpu
     overlapped_ms = max(median_preparation, median_gpu)
     payload = {
-        "method": "triton_oklab_kmeans5_observed_pruned", "gpu": torch.cuda.get_device_name(0),
+        "method": (
+            f"gpu2_liq_like{args.palette_size}_observed_pruned"
+            if args.pipeline == "liq_like"
+            else f"triton_oklab_kmeans{args.palette_size}_r{args.kmeans_restarts}_{args.observed_correction}_observed_pruned"
+        ), "gpu": torch.cuda.get_device_name(0),
+        "pipeline": args.pipeline,
         "images": len(records), "boxes": box_count, "samples_per_box": args.samples, "iterations": args.iterations,
+        "observed_correction": (
+            "frequency_weighted" if args.pipeline == "liq_like" else args.observed_correction
+        ),
+        "palette_size": args.palette_size,
+        "kmeans_restarts": None if args.pipeline == "liq_like" else args.kmeans_restarts,
         "persistent_process_feeder": {"workers": args.process_workers, "trials": args.prepare_trials, "superbatch_ms": pct(preparation_times)},
         "gpu_superbatch_ms": pct(times), "gpu_amortized_ms_per_image_p50": round(median_gpu / len(records), 4),
         "gpu_amortized_ms_per_box_p50": round(median_gpu / box_count, 4),
